@@ -1,0 +1,56 @@
+name: Publish public mirror
+
+# Mirrors this repo's non-personal tool/config content to the public
+# modem7/claude-config-sync repo via publish-public.sh. Trigger paths are
+# kept in lockstep with that script's PATHS whitelist — memory/, machines/,
+# and everything else outside the whitelist must NOT appear here, so the
+# routine SessionStart/SessionEnd sync commits (which only touch memory and
+# machine conf) never trigger a run.
+on:
+  workflow_dispatch: {}
+  push:
+    branches: [master]
+    paths:
+      - install.sh
+      - claude-sync.sh
+      - npm-tools.sh
+      - gh-tools.sh
+      - CONTRIBUTING.md
+      - LICENSE
+      - .gitattributes
+      - .gitignore
+      - .editorconfig
+      - .wakatime-project
+      - renovate.json
+      - .github/**
+      - docs/**
+      - lib/**
+      - tests/**
+      - dot-claude/CLAUDE.md
+      - dot-claude/settings.json
+      - dot-claude/hooks/**
+      - dot-claude/agents/**
+      - dot-agents/**
+      - README.public.md
+      - publish-public.sh
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up deploy key for the public repo
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.PUBLIC_MIRROR_DEPLOY_KEY }}
+
+      - name: Configure git identity for the publish commit
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Publish
+        env:
+          CLAUDE_CONFIG_PUBLIC_REPO_URL: git@github.com:modem7/claude-config-sync.git
+        run: ./publish-public.sh
