@@ -79,6 +79,12 @@ actual config gets re-adopted fresh by the bootstrap that follows. Refuses
 to run if the local clone has uncommitted or untracked changes, so it can't
 silently discard something you meant to keep.
 
+**Note:** `install.sh` has no built-in repo URL fallback — `--repair` needs
+one to re-clone from, same as a first-time install. Run it from a terminal
+so it can prompt you, or set `CLAUDE_SYNC_REPO_URL=<your repo>` beforehand
+(e.g. for non-interactive/scripted use). Without either, it exits before
+touching anything rather than repairing.
+
 If a machine's `enabledPlugins`/settings never seem to catch up with what's
 on your default branch, it's likely a stuck sync: `sync`'s capture step
 commits the local `settings.json` *before* pulling, so if that pull then
