@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: ShellCheck
+        run: shellcheck install.sh claude-sync.sh npm-tools.sh gh-tools.sh lib/*.sh
+
+      - name: Validate renovate.json is valid JSON
+        run: jq empty renovate.json
+
+      - name: Validate dot-claude/settings.json is valid JSON (if present)
+        run: |
+          if [ -f dot-claude/settings.json ]; then
+            jq empty dot-claude/settings.json
+          fi
+
+      - name: Install gitleaks
+        env:
+          GITLEAKS_VERSION: 8.21.2 # renovate: datasource=github-releases depName=gitleaks/gitleaks
+        run: |
+          curl -sSL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" | tar -xz gitleaks
+          sudo mv gitleaks /usr/local/bin/
+
+      - name: Run gitleaks
+        run: gitleaks detect --source . -v
+
+      - name: Install bats-core
+        run: sudo apt-get update && sudo apt-get install -y bats
+
+      - name: Run bats test suite
+        run: bats tests/

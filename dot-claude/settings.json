@@ -1,0 +1,191 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "permissions": {
+    "allow": [
+      "Bash(*)",
+      "Read(*)",
+      "Write(*)",
+      "Edit(*)",
+      "MultiEdit(*)",
+      "WebFetch(*)",
+      "WebSearch(*)",
+      "TodoRead(*)",
+      "TodoWrite(*)",
+      "Grep(*)",
+      "Glob(*)",
+      "LS(*)",
+      "Task(*)"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Read",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "input=$(cat); file=$(echo \"$input\" | jq -r '.tool_input.file_path // empty'); limit=$(echo \"$input\" | jq -r '.tool_input.limit // empty'); if [ -n \"$file\" ] && [ -f \"$file\" ] && [ -z \"$limit\" ]; then lines=$(wc -l < \"$file\" 2>/dev/null || echo 0); if [ \"$lines\" -gt 500 ]; then echo \"File is $lines lines. Pass a limit/offset instead of reading it whole.\" >&2; exit 2; fi; fi; exit 0",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${HOME}/.claude/hooks/destructive-guard.sh"
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${HOME}/.claude/hooks/branch-guard.sh"
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${HOME}/.claude/hooks/comment-strip.sh"
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${HOME}/.claude/hooks/cd-git-allow.sh"
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${HOME}/.claude/hooks/secret-guard.sh"
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "input=$(cat); printf '%s\\t%s\\n' \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\" \"$input\" >> \"$HOME/.claude/subagent-activity.log\"; exit 0",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ -x \"$HOME/claude-config/claude-sync.sh\" ] && { timeout 20 \"$HOME/claude-config/claude-sync.sh\" sync >> \"$HOME/.claude/claude-config-sync.log\" 2>&1 && echo '{\"systemMessage\": \"Synced config loaded.\"}' || echo '{\"systemMessage\": \"claude-config sync failed - see claude-config-sync.log\"}'; }; true",
+            "timeout": 30,
+            "statusMessage": "Syncing claude-config..."
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ -x \"$HOME/claude-config/claude-sync.sh\" ] && { timeout 20 \"$HOME/claude-config/claude-sync.sh\" sync >> \"$HOME/.claude/claude-config-sync.log\" 2>&1 && echo '{\"systemMessage\": \"Synced config saved.\"}' || echo '{\"systemMessage\": \"claude-config sync failed - see claude-config-sync.log\"}'; }; true",
+            "timeout": 30,
+            "statusMessage": "Syncing claude-config..."
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${HOME}/.claude/hooks/syntax-check.sh"
+          }
+        ]
+      },
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${HOME}/.claude/hooks/context-monitor.sh"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${HOME}/.claude/hooks/api-error-alert.sh"
+          }
+        ]
+      }
+    ]
+  },
+  "enabledPlugins": {
+    "frontend-design@claude-plugins-official": true,
+    "code-review@claude-plugins-official": true,
+    "commit-commands@claude-plugins-official": true,
+    "security-guidance@claude-plugins-official": true,
+    "context7@claude-plugins-official": true,
+    "docker@claude-plugins-official": true,
+    "superpowers@superpowers-marketplace": true,
+    "deployment-engineer@awesome-claude-code-plugins": true,
+    "crowdsec@crowdsecurity": true,
+    "andrej-karpathy-skills@karpathy-skills": true,
+    "i-have-adhd@i-have-adhd": true
+  },
+  "extraKnownMarketplaces": {
+    "superpowers-marketplace": {
+      "source": {
+        "source": "github",
+        "repo": "obra/superpowers-marketplace"
+      }
+    },
+    "awesome-claude-code-plugins": {
+      "source": {
+        "source": "github",
+        "repo": "ccplugins/awesome-claude-code-plugins"
+      }
+    },
+    "crowdsecurity": {
+      "source": {
+        "source": "github",
+        "repo": "crowdsecurity/crowdsec-skill"
+      }
+    },
+    "karpathy-skills": {
+      "source": {
+        "source": "github",
+        "repo": "forrestchang/andrej-karpathy-skills"
+      }
+    },
+    "i-have-adhd": {
+      "source": {
+        "source": "github",
+        "repo": "ayghri/i-have-adhd"
+      }
+    }
+  },
+  "theme": "dark"
+}

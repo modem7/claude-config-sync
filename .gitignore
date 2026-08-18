@@ -1,0 +1,62 @@
+# ========================
+# OS / System
+# ========================
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+Desktop.ini
+
+# ========================
+# Claude
+# ========================
+.claude/
+
+# ========================
+# Editor / IDE
+# ========================
+.idea/
+*.iml
+.vscode/
+*.swp
+*.swo
+*~
+.project
+.classpath
+.settings/
+
+# ========================
+# Secrets & Credentials
+# ========================
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+secrets/
+credentials/
+.credentials.json
+.claude.json
+
+# ========================
+# Build Artifacts
+# ========================
+dist/
+build/
+out/
+target/
+*.o
+*.a
+*.so
+*.dylib
+*.exe
+*.out
+
+# ========================
+# Logs & Temp
+# ========================
+*.log
