@@ -34,7 +34,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${HOME}/.claude/hooks/destructive-guard.sh"
+            "command": "/home/modem7/.claude/hooks/destructive-guard.sh"
           }
         ]
       },
@@ -43,7 +43,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${HOME}/.claude/hooks/branch-guard.sh"
+            "command": "/home/modem7/.claude/hooks/branch-guard.sh"
           }
         ]
       },
@@ -52,7 +52,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${HOME}/.claude/hooks/comment-strip.sh"
+            "command": "/home/modem7/.claude/hooks/comment-strip.sh"
           }
         ]
       },
@@ -61,7 +61,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${HOME}/.claude/hooks/cd-git-allow.sh"
+            "command": "/home/modem7/.claude/hooks/cd-git-allow.sh"
           }
         ]
       },
@@ -70,7 +70,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${HOME}/.claude/hooks/secret-guard.sh"
+            "command": "/home/modem7/.claude/hooks/secret-guard.sh"
           }
         ]
       }
@@ -116,7 +116,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${HOME}/.claude/hooks/syntax-check.sh"
+            "command": "/home/modem7/.claude/hooks/syntax-check.sh"
           }
         ]
       },
@@ -125,7 +125,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${HOME}/.claude/hooks/context-monitor.sh"
+            "command": "/home/modem7/.claude/hooks/context-monitor.sh"
           }
         ]
       }
@@ -136,7 +136,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${HOME}/.claude/hooks/api-error-alert.sh"
+            "command": "/home/modem7/.claude/hooks/api-error-alert.sh"
           }
         ]
       }
