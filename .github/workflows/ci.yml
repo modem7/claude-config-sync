@@ -8,7 +8,7 @@ jobs:
   lint-and-test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4.4.0
 
       - name: ShellCheck
         run: shellcheck install.sh claude-sync.sh npm-tools.sh gh-tools.sh lib/*.sh
