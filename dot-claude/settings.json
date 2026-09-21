@@ -188,6 +188,7 @@
     }
   },
   "theme": "dark",
+  "remoteControlAtStartup": true,
   "agentPushNotifEnabled": true,
-  "remoteControlAtStartup": true
+  "inputNeededNotifEnabled": true
 }
