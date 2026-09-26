@@ -153,7 +153,8 @@
     "deployment-engineer@awesome-claude-code-plugins": true,
     "crowdsec@crowdsecurity": true,
     "andrej-karpathy-skills@karpathy-skills": true,
-    "i-have-adhd@i-have-adhd": true
+    "i-have-adhd@i-have-adhd": true,
+    "dm@neural-initiative": true
   },
   "extraKnownMarketplaces": {
     "superpowers-marketplace": {
@@ -184,6 +185,12 @@
       "source": {
         "source": "github",
         "repo": "ayghri/i-have-adhd"
+      }
+    },
+    "neural-initiative": {
+      "source": {
+        "source": "github",
+        "repo": "neuralinitiative/claude-dnd-skill"
       }
     }
   },
