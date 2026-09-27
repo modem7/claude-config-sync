@@ -12,6 +12,8 @@ source "${SCRIPT_DIR}/lib/safety.sh"
 source "${SCRIPT_DIR}/lib/sync-files.sh"
 # shellcheck source=lib/skills-symlink.sh
 source "${SCRIPT_DIR}/lib/skills-symlink.sh"
+# shellcheck source=lib/settings-overlay.sh
+source "${SCRIPT_DIR}/lib/settings-overlay.sh"
 
 REPO_DIR="${SCRIPT_DIR}"
 CLAUDE_HOME="${CLAUDE_SYNC_CLAUDE_HOME:-${HOME}/.claude}"
@@ -51,7 +53,34 @@ do_capture_and_commit() {
   project_path="$(require_project_path)"
   memory_dir="$(resolve_memory_dir "${CLAUDE_HOME}" "${project_path}")"
 
+  # With a per-machine override, local settings.json = shared * override, so
+  # it can't be copied into the shared file verbatim. Keep the shared file
+  # as it was before capture, so the override's leaves can be split back out.
+  local override stamp shared_before="" override_before=""
+  override="$(overlay_path "${REPO_DIR}" "${HOSTNAME_VAL}")"
+  stamp="$(applied_override_stamp)"
+  if [ -f "${CLAUDE_HOME}/settings.json" ] && { [ -f "${override}" ] || [ -f "${stamp}" ]; }; then
+    shared_before="$(mktemp)"
+    override_before="$(mktemp)"
+    if [ -f "${REPO_DIR}/dot-claude/settings.json" ]; then
+      cp "${REPO_DIR}/dot-claude/settings.json" "${shared_before}"
+    else
+      echo '{}' > "${shared_before}"
+    fi
+    # What the last apply actually layered on. No record (never applied, or
+    # applied by a claude-sync.sh from before overrides existed) means
+    # nothing was: local lacking an override key then means "not applied
+    # yet", not "deleted locally".
+    if [ -f "${stamp}" ]; then cp "${stamp}" "${override_before}"; else echo '{}' > "${override_before}"; fi
+  fi
+
   sync_capture "${REPO_DIR}" "${CLAUDE_HOME}" "${AGENTS_HOME}" "${memory_dir}"
+
+  if [ -n "${shared_before}" ]; then
+    overlay_split "${CLAUDE_HOME}/settings.json" "${shared_before}" "${override_before}" \
+      "${override}" "${REPO_DIR}/dot-claude/settings.json"
+    rm -f "${shared_before}" "${override_before}"
+  fi
 
   if ! assert_no_denylisted_files "${REPO_DIR}"; then
     echo "Refusing to commit: denylisted file present in repo tree." >&2
@@ -89,7 +118,42 @@ do_apply() {
   memory_dir="$(resolve_memory_dir "${CLAUDE_HOME}" "${project_path}")"
 
   sync_apply "${REPO_DIR}" "${CLAUDE_HOME}" "${AGENTS_HOME}" "${memory_dir}"
+  apply_settings_overlay
   wire_skill_symlinks "${REPO_DIR}" "${CLAUDE_HOME}" "${AGENTS_HOME}"
+}
+
+# Local-only record of the override the last apply layered on, so capture
+# can tell a local edit from "not applied yet". Lives in CLAUDE_HOME but
+# outside everything sync_capture copies, so it's never synced.
+applied_override_stamp() {
+  echo "${CLAUDE_HOME}/.claude-sync-applied-override.json"
+}
+
+# Layers this machine's override (if any) over the shared settings.json that
+# sync_apply just copied into place, and records what was layered.
+apply_settings_overlay() {
+  local override merged stamp
+  override="$(overlay_path "${REPO_DIR}" "${HOSTNAME_VAL}")"
+  stamp="$(applied_override_stamp)"
+  if [ ! -f "${override}" ] || [ ! -f "${REPO_DIR}/dot-claude/settings.json" ]; then
+    rm -f "${stamp}"
+    return 0
+  fi
+  merged="$(mktemp)"
+  overlay_merge "${REPO_DIR}/dot-claude/settings.json" "${override}" > "${merged}"
+  mv "${merged}" "${CLAUDE_HOME}/settings.json"
+  cp "${override}" "${stamp}"
+}
+
+# What this machine's settings.json should be after a clean apply.
+expected_local_settings() {
+  local override
+  override="$(overlay_path "${REPO_DIR}" "${HOSTNAME_VAL}")"
+  if [ -f "${override}" ]; then
+    overlay_merge "${REPO_DIR}/dot-claude/settings.json" "${override}"
+  else
+    cat "${REPO_DIR}/dot-claude/settings.json"
+  fi
 }
 
 # Non-destructive counterpart to do_apply, used only for a machine's
@@ -101,6 +165,7 @@ do_apply_merge() {
   memory_dir="$(resolve_memory_dir "${CLAUDE_HOME}" "${project_path}")"
 
   sync_apply "${REPO_DIR}" "${CLAUDE_HOME}" "${AGENTS_HOME}" "${memory_dir}" "false"
+  apply_settings_overlay
   wire_skill_symlinks "${REPO_DIR}" "${CLAUDE_HOME}" "${AGENTS_HOME}"
 }
 
@@ -154,10 +219,11 @@ do_doctor() {
   if project_path="$(require_project_path 2>/dev/null)"; then
     memory_dir="$(resolve_memory_dir "${CLAUDE_HOME}" "${project_path}")"
     if [ -f "${CLAUDE_HOME}/settings.json" ] && [ -f "${REPO_DIR}/dot-claude/settings.json" ] \
-      && ! diff -q "${CLAUDE_HOME}/settings.json" "${REPO_DIR}/dot-claude/settings.json" >/dev/null 2>&1; then
-      doctor_report "local ~/.claude/settings.json differs from the repo's dot-claude/settings.json."
+      && ! diff -q "${CLAUDE_HOME}/settings.json" <(expected_local_settings) >/dev/null 2>&1; then
+      doctor_report "local ~/.claude/settings.json differs from the repo's dot-claude/settings.json (plus this machine's overrides)."
       if [ "${remediate}" = "true" ]; then
         sync_apply "${REPO_DIR}" "${CLAUDE_HOME}" "${AGENTS_HOME}" "${memory_dir}"
+        apply_settings_overlay
         wire_skill_symlinks "${REPO_DIR}" "${CLAUDE_HOME}" "${AGENTS_HOME}"
         echo "  -> re-applied the repo's settings.json to local."
       fi
@@ -170,8 +236,54 @@ do_doctor() {
   return "${DOCTOR_ISSUES}"
 }
 
+commit_if_changed() {
+  git -C "${REPO_DIR}" add -A
+  if ! git -C "${REPO_DIR}" diff --cached --quiet; then
+    git -C "${REPO_DIR}" commit -q -m "$1"
+  fi
+}
+
+# claude-sync.sh override add|remove|list [JQ_PATH]
+do_override() {
+  local action="${1:-list}"
+  local expr="${2:-}"
+  case "${action}" in
+    list)
+      overlay_list "${REPO_DIR}" "${HOSTNAME_VAL}"
+      ;;
+    add)
+      [ -n "${expr}" ] || usage
+      # Capture first so any other pending local edits are committed as
+      # shared, then move this one key out of the shared file.
+      do_capture_and_commit
+      overlay_add "${REPO_DIR}" "${HOSTNAME_VAL}" "${CLAUDE_HOME}/settings.json" "${expr}"
+      commit_if_changed "override: ${HOSTNAME_VAL} keeps ${expr} to itself"
+      do_integrate
+      do_push
+      do_apply
+      echo "${expr} is now specific to ${HOSTNAME_VAL}; other machines drop it on their next sync."
+      ;;
+    remove)
+      [ -n "${expr}" ] || usage
+      # Capture while the override still owns the key, so its local value
+      # isn't mistaken for a new shared value, then drop it and re-apply.
+      do_capture_and_commit
+      overlay_remove "${REPO_DIR}" "${HOSTNAME_VAL}" "${expr}"
+      commit_if_changed "override: ${HOSTNAME_VAL} stops overriding ${expr}"
+      do_integrate
+      do_push
+      do_apply
+      echo "${expr} on ${HOSTNAME_VAL} now follows the shared settings."
+      ;;
+    *)
+      usage
+      ;;
+  esac
+}
+
 usage() {
-  echo "Usage: claude-sync.sh [push|pull|sync|bootstrap|doctor [remediate]]" >&2
+  echo "Usage: claude-sync.sh [push|pull|sync|bootstrap|doctor [remediate]|override add|remove|list [JQ_PATH]]" >&2
+  echo "  e.g. claude-sync.sh override add '.enabledPlugins[\"name@marketplace\"]'" >&2
   exit 1
 }
 
@@ -189,7 +301,7 @@ main() {
   # itself on a feature branch (e.g. via SessionStart/SessionEnd hooks
   # firing mid-session). Skip rather than pollute that branch.
   case "${cmd}" in
-    push|sync|bootstrap)
+    push|sync|bootstrap|override)
       if ! on_default_branch; then
         echo "claude-config is on branch '$(git -C "${REPO_DIR}" rev-parse --abbrev-ref HEAD 2>/dev/null)', not its default branch '$(default_branch)' - skipping sync to avoid committing local config onto a feature branch. Switch back to the default branch to sync." >&2
         exit 0
@@ -218,6 +330,9 @@ main() {
       do_apply_merge
       do_capture_and_commit
       do_push
+      ;;
+    override)
+      do_override "${2:-list}" "${3:-}"
       ;;
     doctor)
       if [ "${2:-}" = "remediate" ]; then

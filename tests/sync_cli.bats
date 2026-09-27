@@ -514,3 +514,102 @@ doctor_as_machine_a() {
   [[ "$output" == *"re-applied the repo's settings.json"* ]]
   [ "$(cat "${CLAUDE_HOME_A}/settings.json")" = '{"theme":"dark"}' ]
 }
+
+# ── Per-machine settings overrides ───────────────────────────────────────
+
+sync_as() {  # sync_as a|b CMD [ARGS...]
+  local m="$1"; shift
+  local home agents repo
+  if [ "$m" = a ]; then home="${CLAUDE_HOME_A}" agents="${AGENTS_HOME_A}" repo="${REPO_A}"
+  else home="${CLAUDE_HOME_B}" agents="${AGENTS_HOME_B}" repo="${REPO_B}"; fi
+  CLAUDE_SYNC_CLAUDE_HOME="${home}" CLAUDE_SYNC_AGENTS_HOME="${agents}" CLAUDE_SYNC_HOSTNAME="host-${m}" \
+  GIT_AUTHOR_NAME=test GIT_AUTHOR_EMAIL=test@test GIT_COMMITTER_NAME=test GIT_COMMITTER_EMAIL=test@test \
+    "${repo}/claude-sync.sh" "$@"
+}
+
+setup_two_machines() {
+  echo '{"theme":"dark","enabledPlugins":{"shared@m":true}}' > "${CLAUDE_HOME_A}/settings.json"
+  sync_as a sync >/dev/null
+  git clone -q "${ORIGIN}" "${REPO_B}"
+  mkdir -p "${CLAUDE_HOME_B}" "${AGENTS_HOME_B}/skills"
+  source "${LIB_DIR}/machine-conf.sh"
+  write_machine_conf "${REPO_B}/machines/host-b.conf" "/home/modem7/work"
+  sync_as b bootstrap >/dev/null
+}
+
+@test "a per-machine override stays on its machine while shared changes still reach every machine" {
+  setup_two_machines
+  echo '{"enabledPlugins":{"dnd@m":true}}' > "${REPO_A}/machines/host-a.settings.json"
+  sync_as a sync >/dev/null
+  [ "$(jq -r '.enabledPlugins["dnd@m"]' "${CLAUDE_HOME_A}/settings.json")" = "true" ]
+
+  # A second sync with nothing changed commits nothing (no churn).
+  local before; before="$(git -C "${REPO_A}" rev-parse HEAD)"
+  sync_as a sync >/dev/null
+  [ "$(git -C "${REPO_A}" rev-parse HEAD)" = "${before}" ]
+
+  # Shared file never got the machine-only plugin; B never sees it.
+  [ "$(jq -r '.enabledPlugins["dnd@m"] // "absent"' "${REPO_A}/dot-claude/settings.json")" = "absent" ]
+  sync_as b sync >/dev/null
+  [ "$(jq -r '.enabledPlugins["dnd@m"] // "absent"' "${CLAUDE_HOME_B}/settings.json")" = "absent" ]
+
+  # A shared change made on A (theme) still reaches B.
+  jq '.theme = "light"' "${CLAUDE_HOME_A}/settings.json" > "${BATS_TEST_TMPDIR}/t" && mv "${BATS_TEST_TMPDIR}/t" "${CLAUDE_HOME_A}/settings.json"
+  sync_as a sync >/dev/null
+  sync_as b sync >/dev/null
+  [ "$(jq -r '.theme' "${CLAUDE_HOME_B}/settings.json")" = "light" ]
+  [ "$(jq -r '.enabledPlugins["dnd@m"]' "${CLAUDE_HOME_A}/settings.json")" = "true" ]
+
+  # Toggling the machine-only plugin on A updates A's override, not the shared file.
+  jq '.enabledPlugins["dnd@m"] = false' "${CLAUDE_HOME_A}/settings.json" > "${BATS_TEST_TMPDIR}/t" && mv "${BATS_TEST_TMPDIR}/t" "${CLAUDE_HOME_A}/settings.json"
+  sync_as a sync >/dev/null
+  [ "$(jq -c . "${REPO_A}/machines/host-a.settings.json")" = '{"enabledPlugins":{"dnd@m":false}}' ]
+  [ "$(jq -r '.enabledPlugins["dnd@m"] // "absent"' "${REPO_A}/dot-claude/settings.json")" = "absent" ]
+}
+
+@test "override add makes a shared key machine-specific; other machines drop it on their next sync" {
+  setup_two_machines
+  [ "$(jq -r '.enabledPlugins["shared@m"]' "${CLAUDE_HOME_B}/settings.json")" = "true" ]
+
+  run sync_as a override add '.enabledPlugins["shared@m"]'
+  [ "$status" -eq 0 ]
+  [ "$(jq -c . "${REPO_A}/machines/host-a.settings.json")" = '{"enabledPlugins":{"shared@m":true}}' ]
+  [ "$(jq -r '.enabledPlugins["shared@m"]' "${CLAUDE_HOME_A}/settings.json")" = "true" ]
+
+  sync_as b sync >/dev/null
+  [ "$(jq -r '.enabledPlugins["shared@m"] // "absent"' "${CLAUDE_HOME_B}/settings.json")" = "absent" ]
+
+  run sync_as a override list
+  [ "${lines[0]}" = '.enabledPlugins["shared@m"] = true' ]
+
+  # doctor treats shared * override as the expected local state.
+  run sync_as a doctor
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"healthy"* ]]
+}
+
+@test "override remove hands the key back to the shared settings" {
+  setup_two_machines
+  echo '{"theme":"solarized"}' > "${REPO_A}/machines/host-a.settings.json"
+  sync_as a sync >/dev/null
+  [ "$(jq -r '.theme' "${CLAUDE_HOME_A}/settings.json")" = "solarized" ]
+
+  sync_as a override remove '.theme' >/dev/null
+  [ ! -f "${REPO_A}/machines/host-a.settings.json" ]
+  [ "$(jq -r '.theme' "${CLAUDE_HOME_A}/settings.json")" = "dark" ]
+  [ "$(jq -r '.theme' "${REPO_A}/dot-claude/settings.json")" = "dark" ]
+}
+
+@test "an apply by a pre-override claude-sync.sh isn't mistaken for deleting the override's keys" {
+  setup_two_machines
+  echo '{"enabledPlugins":{"dnd@m":true}}' > "${REPO_A}/machines/host-a.settings.json"
+  sync_as a sync >/dev/null
+  # Simulate an old claude-sync.sh having applied the shared file without the
+  # override (and so without writing the applied-override record).
+  cp "${REPO_A}/dot-claude/settings.json" "${CLAUDE_HOME_A}/settings.json"
+  rm -f "${CLAUDE_HOME_A}/.claude-sync-applied-override.json"
+
+  sync_as a sync >/dev/null
+  [ "$(jq -c . "${REPO_A}/machines/host-a.settings.json")" = '{"enabledPlugins":{"dnd@m":true}}' ]
+  [ "$(jq -r '.enabledPlugins["dnd@m"]' "${CLAUDE_HOME_A}/settings.json")" = "true" ]
+}

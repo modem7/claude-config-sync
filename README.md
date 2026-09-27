@@ -49,6 +49,7 @@ directory unless it differs.
 ~/claude-config/claude-sync.sh pull   # pull + apply only
 ~/claude-config/claude-sync.sh doctor            # check for a stuck sync (report only)
 ~/claude-config/claude-sync.sh doctor remediate  # check, and fix what's safely fixable
+~/claude-config/claude-sync.sh override list     # this machine's settings overrides (see "Per-machine overrides")
 ```
 
 `push`/`sync`/`bootstrap` skip (without committing anything) if this clone
@@ -115,6 +116,42 @@ plugin installs already imply; review hook-script changes accordingly.
 any session/task/security state — see
 `docs/superpowers/specs/2026-07-25-claude-config-sync-design.md` for the
 full list and rationale.
+
+## Per-machine overrides
+
+`dot-claude/settings.json` is shared by every machine. To keep a setting on
+just one machine (a plugin only one box uses, a different theme, a hook that
+only makes sense there), put it in `machines/<hostname>.settings.json`:
+
+```json
+{
+  "enabledPlugins": { "dm@neural-initiative": true },
+  "extraKnownMarketplaces": {
+    "neural-initiative": { "source": { "source": "github", "repo": "neuralinitiative/claude-dnd-skill" } }
+  }
+}
+```
+
+On that machine, `~/.claude/settings.json` becomes the shared file with the
+override deep-merged on top: objects merge key by key, arrays and plain
+values replace, and `null` removes a key. Other machines never see it.
+
+Every key the override file mentions belongs to that machine. If you change
+one locally (e.g. toggle that plugin with `/plugin`), the change is written
+back into the override file, not the shared file. Anything else you change
+is shared as before.
+
+The easy way to manage overrides is with jq-style paths, run on the machine
+in question:
+
+```bash
+~/claude-config/claude-sync.sh override list
+~/claude-config/claude-sync.sh override add '.enabledPlugins["dm@neural-initiative"]'   # make machine-only; other machines drop it on their next sync
+~/claude-config/claude-sync.sh override remove '.enabledPlugins["dm@neural-initiative"]'  # follow the shared settings again
+```
+
+Editing the file by hand works too; the next `sync` picks it up. Override
+files live in `machines/`, so they're never published to the public mirror.
 
 ## My plugins and skills (opinionated — take or leave)
 
