@@ -97,9 +97,17 @@ do_integrate() {
   if ! git -C "${REPO_DIR}" rev-parse --abbrev-ref --symbolic-full-name '@{u}' >/dev/null 2>&1; then
     return 0
   fi
-  if ! git -C "${REPO_DIR}" pull --rebase; then
-    git -C "${REPO_DIR}" rebase --abort || true
-    echo "git pull --rebase failed (conflict). Resolve manually in ${REPO_DIR} and re-run." >&2
+  # Fetch separately from the rebase so an unreachable remote (network, SSH
+  # port blocked, auth) isn't misreported as a merge conflict.
+  if ! git -C "${REPO_DIR}" fetch; then
+    echo "git fetch failed - could not reach the remote (network, SSH or auth problem). Nothing was changed locally; fix connectivity and re-run." >&2
+    return 1
+  fi
+  if ! git -C "${REPO_DIR}" rebase; then
+    if [ -d "${REPO_DIR}/.git/rebase-merge" ] || [ -d "${REPO_DIR}/.git/rebase-apply" ]; then
+      git -C "${REPO_DIR}" rebase --abort || true
+    fi
+    echo "git rebase onto upstream failed (conflict). Resolve manually in ${REPO_DIR} and re-run." >&2
     return 1
   fi
 }

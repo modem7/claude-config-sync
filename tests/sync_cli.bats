@@ -500,6 +500,17 @@ doctor_as_machine_a() {
   [ "$(cat "${CLAUDE_HOME_A}/settings.json")" = '{"theme":"custom"}' ]
 }
 
+@test "sync reports an unreachable remote as a fetch failure, not a conflict" {
+  sync_as_machine_a sync
+  git -C "${REPO_A}" remote set-url origin "${BATS_TEST_TMPDIR}/does-not-exist.git"
+
+  run sync_as_machine_a sync
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"git fetch failed"* ]]
+  [[ "$output" != *"conflict"* ]]
+  [[ "$output" != *"No rebase in progress"* ]]
+}
+
 @test "doctor remediate refreshes local settings.json when only local is stale" {
   sync_as_machine_a sync
   # Local file drifts (e.g. a manual local edit) without a sync capturing it -
