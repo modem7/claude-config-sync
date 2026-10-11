@@ -1,5 +1,10 @@
 {
   "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "env": {
+    "ENABLE_STOP_REVIEW": "0",
+    "SECURITY_REVIEW_MODEL": "claude-sonnet-5-5",
+    "SG_AGENTIC_MODEL": "claude-sonnet-5-5"
+  },
   "permissions": {
     "allow": [
       "Bash(*)",
@@ -16,11 +21,6 @@
       "LS(*)",
       "Task(*)"
     ]
-  },
-  "env": {
-    "ENABLE_STOP_REVIEW": "0",
-    "SECURITY_REVIEW_MODEL": "claude-sonnet-5-5",
-    "SG_AGENTIC_MODEL": "claude-sonnet-5-5"
   },
   "hooks": {
     "PreToolUse": [
