@@ -19,7 +19,8 @@
       "Grep(*)",
       "Glob(*)",
       "LS(*)",
-      "Task(*)"
+      "Task(*)",
+      "Bash(gh pr merge *)"
     ]
   },
   "hooks": {
