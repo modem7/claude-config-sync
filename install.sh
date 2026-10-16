@@ -87,6 +87,11 @@ fi
 # sure it's actually present. No-ops if already installed.
 "${REPO_DIR}/gh-tools.sh" || true
 
+# The agent-memory plugin (synced from claude.ai, not this repo) runs
+# `python` and needs mcp 1.x plus a couple of pip packages, so provide them.
+# No-ops if already in place.
+"${REPO_DIR}/python-tools.sh" || true
+
 CONF_FILE="${REPO_DIR}/machines/${HOSTNAME_VAL}.conf"
 CONF_ALREADY_EXISTED="false"
 [ -f "${CONF_FILE}" ] && CONF_ALREADY_EXISTED="true"

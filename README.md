@@ -200,6 +200,20 @@ already-set-up machine doubles as an update check. If `npm` isn't available
 on a machine, this step is skipped with a message rather than failing the
 rest of the install.
 
+## Python dependencies for the agent-memory plugin
+
+The agent-memory plugin arrives via claude.ai plugin sync, so its
+dependencies can't be carried here either. `install.sh` runs
+`python-tools.sh` on every invocation, which:
+
+- installs `python-is-python3` via apt if there's no `python` command (the
+  plugin's MCP server and hooks run `python`, and Ubuntu only ships
+  `python3`);
+- runs `pip install --break-system-packages 'mcp<2' aiosqlite pyyaml` (the
+  plugin's server uses the mcp 1.x API, which mcp 2.x removed).
+
+Either step is skipped with a message if apt-get or python3 is missing.
+
 ## Memory scoping
 
 Claude Code keys its auto-memory storage off the exact working directory
