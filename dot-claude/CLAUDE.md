@@ -15,3 +15,7 @@ Do this as the first step of the task, not after implementing something. If the 
 ## Token usage (recommended)
 
 Match effort to task complexity and keep tool output lean — see global memory `feedback_token_optimisation.md` for the full list.
+
+## Scripts are written by Opus
+
+The default model is Sonnet. When a task needs a new script, a full rewrite, or a non-trivial change to a script (bash, Python, PowerShell, hook scripts), hand that part to the `script-writer` agent, which runs on Opus. Give it the real files and the goal. Then check what it wrote. Do not write scripts yourself on Sonnet. Single-line edits and config files stay with the main session.
