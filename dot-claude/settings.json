@@ -1,17 +1,10 @@
 {
   "$schema": "https://json.schemastore.org/claude-code-settings.json",
-  "model": "sonnet",
-  "advisorModel": "opus",
   "env": {
     "ENABLE_STOP_REVIEW": "0",
     "SECURITY_REVIEW_MODEL": "claude-sonnet-5-5",
-    "SG_AGENTIC_MODEL": "claude-sonnet-5-5",
-    "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "300000"
+    "SG_AGENTIC_MODEL": "claude-sonnet-5-5"
   },
-  "deniedMcpServers": [
-    { "serverName": "github" },
-    { "serverName": "context7" }
-  ],
   "permissions": {
     "allow": [
       "Bash(*)",
@@ -107,11 +100,6 @@
             "command": "[ -x \"$HOME/claude-config/claude-sync.sh\" ] && { timeout 20 \"$HOME/claude-config/claude-sync.sh\" sync >> \"$HOME/.claude/claude-config-sync.log\" 2>&1 && echo '{\"systemMessage\": \"Synced config loaded.\"}' || echo '{\"systemMessage\": \"claude-config sync failed - see claude-config-sync.log\"}'; }; true",
             "timeout": 30,
             "statusMessage": "Syncing claude-config..."
-          },
-          {
-            "type": "command",
-            "command": "\"$HOME/.claude/hooks/plugin-suggest.sh\"",
-            "timeout": 5
           }
         ]
       }
@@ -161,17 +149,17 @@
     ]
   },
   "enabledPlugins": {
-    "frontend-design@claude-plugins-official": false,
+    "frontend-design@claude-plugins-official": true,
     "code-review@claude-plugins-official": true,
     "commit-commands@claude-plugins-official": true,
     "security-guidance@claude-plugins-official": true,
-    "context7@claude-plugins-official": false,
-    "docker@claude-plugins-official": false,
+    "context7@claude-plugins-official": true,
+    "docker@claude-plugins-official": true,
     "superpowers@superpowers-marketplace": true,
-    "deployment-engineer@awesome-claude-code-plugins": false,
-    "crowdsec@crowdsecurity": false,
-    "andrej-karpathy-skills@karpathy-skills": false,
-    "i-have-adhd@i-have-adhd": false
+    "deployment-engineer@awesome-claude-code-plugins": true,
+    "crowdsec@crowdsecurity": true,
+    "andrej-karpathy-skills@karpathy-skills": true,
+    "i-have-adhd@i-have-adhd": true
   },
   "extraKnownMarketplaces": {
     "superpowers-marketplace": {
