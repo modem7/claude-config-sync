@@ -3,12 +3,14 @@
 # ~/.agents/skills/ content is git-tracked. This wires a discovery symlink
 # for each tracked skill without disturbing real (non-symlink) directories
 # that already live under ~/.claude/skills/ (built-in or plugin-managed).
+# It also removes links into ~/.agents/skills/ whose target no longer exists
+# (a skill deleted from the repo), and nothing else.
 
 wire_skill_symlinks() {
   local repo_dir="$1"
   local claude_home="$2"
   local agents_home="$3"
-  local skill_dir name link
+  local skill_dir name link target
 
   mkdir -p "${claude_home}/skills"
 
@@ -20,5 +22,14 @@ wire_skill_symlinks() {
     if [ -L "${link}" ] || [ ! -e "${link}" ]; then
       ln -sfn "${agents_home}/skills/${name}" "${link}"
     fi
+  done
+
+  for link in "${claude_home}"/skills/*; do
+    [ -L "${link}" ] || continue
+    [ -e "${link}" ] && continue
+    target="$(readlink "${link}")"
+    case "${target}" in
+      "${agents_home}/skills/"*) rm -f "${link}" ;;
+    esac
   done
 }
