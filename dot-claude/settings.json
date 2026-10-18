@@ -107,6 +107,11 @@
             "command": "[ -x \"$HOME/claude-config/claude-sync.sh\" ] && { timeout 20 \"$HOME/claude-config/claude-sync.sh\" sync >> \"$HOME/.claude/claude-config-sync.log\" 2>&1 && echo '{\"systemMessage\": \"Synced config loaded.\"}' || echo '{\"systemMessage\": \"claude-config sync failed - see claude-config-sync.log\"}'; }; true",
             "timeout": 30,
             "statusMessage": "Syncing claude-config..."
+          },
+          {
+            "type": "command",
+            "command": "\"$HOME/.claude/hooks/plugin-suggest.sh\"",
+            "timeout": 5
           }
         ]
       }
