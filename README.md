@@ -173,8 +173,8 @@ Plugins (all from `claude-plugins-official` unless noted):
 - `andrej-karpathy-skills` (`karpathy-skills`) — behavioral guidelines against overcomplication
 - `i-have-adhd` — ADHD-friendly task/focus workflow
 
-Skills in `dot-agents/skills/` (`azure-cli`, `gitlab-cli`, `release`,
-`find-skills`) — a few example personal skills as a starting point; prune or
+Skills in `dot-agents/skills/` (`find-skills`,
+`woodpecker-cli`) — a few example personal skills as a starting point; prune or
 replace with your own.
 
 For a broader look at what's out there beyond my picks, browse
