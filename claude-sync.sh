@@ -48,10 +48,73 @@ require_project_path() {
   fi
 }
 
+# Local-only record of the repo commit the live config was last made to
+# match (by an apply, or by a capture that committed it). Capture uses it to
+# tell "live files are stale because the clone moved on" (e.g. a PR was
+# merged and the clone fast-forwarded without an apply) from "live files
+# hold genuine local edits". Like the override stamp it lives in CLAUDE_HOME
+# but outside everything sync_capture copies, so it's never synced.
+applied_commit_stamp() {
+  echo "${CLAUDE_HOME}/.claude-sync-applied-commit"
+}
+
+record_applied_commit() {
+  git -C "${REPO_DIR}" rev-parse HEAD > "$(applied_commit_stamp)"
+}
+
+# True when the live config is exactly what a clean apply of commit $1 would
+# have left behind, i.e. nothing has been edited locally since that commit.
+live_matches_commit() {
+  local sha="$1" memory_dir="$2" tmp override_stamp rc=0
+  tmp="$(mktemp -d)"
+  mkdir -p "${tmp}/applied"
+  git -C "${REPO_DIR}" archive "${sha}" | tar -x -C "${tmp}/applied"
+  # git archive drops empty directories, which sync_capture always creates.
+  mkdir -p "${tmp}/applied/dot-claude/agents" "${tmp}/applied/dot-claude/hooks" \
+    "${tmp}/applied/dot-agents/skills" "${tmp}/applied/memory"
+  cp -a "${tmp}/applied" "${tmp}/live"
+  sync_capture "${tmp}/live" "${CLAUDE_HOME}" "${AGENTS_HOME}" "${memory_dir}"
+  override_stamp="$(applied_override_stamp)"
+  if [ -f "${override_stamp}" ] && [ -f "${tmp}/applied/dot-claude/settings.json" ]; then
+    overlay_merge "${tmp}/applied/dot-claude/settings.json" "${override_stamp}" > "${tmp}/merged" \
+      && mv "${tmp}/merged" "${tmp}/applied/dot-claude/settings.json"
+  fi
+  diff -rq "${tmp}/applied" "${tmp}/live" >/dev/null 2>&1 || rc=1
+  rm -rf "${tmp}"
+  return "${rc}"
+}
+
+# Capture copies the live files over the repo, so it must never run when the
+# live files are older than the clone's HEAD: it would commit the stale
+# files over newer work (this reverted two merged PRs on 2026-10-18).
+# Returns 0 to capture, 10 to skip capture (live is stale but unmodified, so
+# integrate and apply will bring it up to date), 1 when live has local edits
+# AND the clone moved, which needs a human.
+check_capture_is_safe() {
+  local memory_dir="$1" stamp sha
+  stamp="$(applied_commit_stamp)"
+  [ -f "${stamp}" ] || return 0
+  sha="$(cat "${stamp}")"
+  [ "${sha}" != "$(git -C "${REPO_DIR}" rev-parse HEAD)" ] || return 0
+  if git -C "${REPO_DIR}" cat-file -e "${sha}^{commit}" 2>/dev/null \
+     && live_matches_commit "${sha}" "${memory_dir}"; then
+    echo "claude-sync: the clone moved on since the last apply and the live config is unmodified; skipping capture so stale files are not committed." >&2
+    return 10
+  fi
+  echo "claude-sync: refusing to capture. The clone's HEAD moved since the last apply and the live config also has local edits, so capturing could overwrite newer repo changes." >&2
+  echo "  Review the differences, then run 'claude-sync.sh pull' (discards local edits, applies the repo) or copy your edits somewhere safe first." >&2
+  return 1
+}
+
 do_capture_and_commit() {
   local project_path memory_dir
   project_path="$(require_project_path)"
   memory_dir="$(resolve_memory_dir "${CLAUDE_HOME}" "${project_path}")"
+
+  local safe=0
+  check_capture_is_safe "${memory_dir}" || safe=$?
+  if [ "${safe}" -eq 10 ]; then return 0; fi
+  if [ "${safe}" -ne 0 ]; then return 1; fi
 
   # With a per-machine override, local settings.json = shared * override, so
   # it can't be copied into the shared file verbatim. Keep the shared file
@@ -91,6 +154,9 @@ do_capture_and_commit() {
   if ! git -C "${REPO_DIR}" diff --cached --quiet; then
     git -C "${REPO_DIR}" commit -m "sync: ${HOSTNAME_VAL} $(date -u +%Y-%m-%dT%H:%M:%SZ)"
   fi
+  # Live now equals HEAD by construction, so a failed push after this point
+  # must not later look like a stale clone.
+  record_applied_commit
 }
 
 do_integrate() {
@@ -128,6 +194,7 @@ do_apply() {
   sync_apply "${REPO_DIR}" "${CLAUDE_HOME}" "${AGENTS_HOME}" "${memory_dir}"
   apply_settings_overlay
   wire_skill_symlinks "${REPO_DIR}" "${CLAUDE_HOME}" "${AGENTS_HOME}"
+  record_applied_commit
 }
 
 # Local-only record of the override the last apply layered on, so capture
@@ -233,6 +300,7 @@ do_doctor() {
         sync_apply "${REPO_DIR}" "${CLAUDE_HOME}" "${AGENTS_HOME}" "${memory_dir}"
         apply_settings_overlay
         wire_skill_symlinks "${REPO_DIR}" "${CLAUDE_HOME}" "${AGENTS_HOME}"
+        record_applied_commit
         echo "  -> re-applied the repo's settings.json to local."
       fi
     fi

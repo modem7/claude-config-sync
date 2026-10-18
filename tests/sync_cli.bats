@@ -624,3 +624,77 @@ setup_two_machines() {
   [ "$(jq -c . "${REPO_A}/machines/host-a.settings.json")" = '{"enabledPlugins":{"dnd@m":true}}' ]
   [ "$(jq -r '.enabledPlugins["dnd@m"]' "${CLAUDE_HOME_A}/settings.json")" = "true" ]
 }
+
+# A PR merged on GitHub and the clone was fast-forwarded (git pull) but the
+# live config was never re-applied. The next sync's capture used to commit the
+# stale live files over master, reverting the merged PR (2026-10-18).
+fast_forward_clone_without_apply() {  # a hook another machine added to origin
+  setup_two_machines
+  mkdir -p "${CLAUDE_HOME_B}/hooks"
+  echo 'echo new-hook' > "${CLAUDE_HOME_B}/hooks/new-hook.sh"
+  sync_as b sync >/dev/null
+  git -C "${REPO_A}" pull -q --ff-only
+  [ -f "${REPO_A}/dot-claude/hooks/new-hook.sh" ]
+  [ ! -f "${CLAUDE_HOME_A}/hooks/new-hook.sh" ]
+}
+
+@test "sync does not revert a newer commit when the clone moved but live was never applied" {
+  fast_forward_clone_without_apply
+
+  sync_as a sync >/dev/null 2>&1
+
+  [ -f "${REPO_A}/dot-claude/hooks/new-hook.sh" ]
+  [ -f "${CLAUDE_HOME_A}/hooks/new-hook.sh" ]
+  git -C "${REPO_A}" fetch -q
+  [ "$(git -C "${REPO_A}" rev-parse HEAD)" = "$(git -C "${REPO_A}" rev-parse origin/master)" ]
+  ! git -C "${REPO_A}" log --format=%s | head -1 | grep -q '^sync: host-a'
+}
+
+@test "push also refuses to revert a newer commit when live is stale" {
+  fast_forward_clone_without_apply
+  local before; before="$(git -C "${REPO_A}" rev-parse HEAD)"
+
+  sync_as a push >/dev/null 2>&1
+
+  [ "$(git -C "${REPO_A}" rev-parse HEAD)" = "${before}" ]
+  [ -f "${REPO_A}/dot-claude/hooks/new-hook.sh" ]
+}
+
+@test "sync refuses when the clone moved AND live has local edits, and changes nothing" {
+  fast_forward_clone_without_apply
+  echo "local edit" > "${CLAUDE_HOME_A}/CLAUDE.md"
+  local before; before="$(git -C "${REPO_A}" rev-parse HEAD)"
+
+  run sync_as a sync
+
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"refusing to capture"* ]]
+  [ "$(git -C "${REPO_A}" rev-parse HEAD)" = "${before}" ]
+  [ "$(cat "${CLAUDE_HOME_A}/CLAUDE.md")" = "local edit" ]
+  [ -f "${REPO_A}/dot-claude/hooks/new-hook.sh" ]
+}
+
+@test "a sync whose push failed does not make the next sync refuse" {
+  setup_two_machines
+  echo "edit one" > "${CLAUDE_HOME_A}/CLAUDE.md"
+  local good; good="$(git -C "${REPO_A}" remote get-url origin)"
+  git -C "${REPO_A}" remote set-url origin "${BATS_TEST_TMPDIR}/does-not-exist.git"
+  run sync_as a sync
+  [ "$status" -ne 0 ]
+
+  git -C "${REPO_A}" remote set-url origin "${good}"
+  echo "edit two" > "${CLAUDE_HOME_A}/CLAUDE.md"
+  run sync_as a sync
+
+  [ "$status" -eq 0 ]
+  [ "$(git -C "${ORIGIN}" show master:dot-claude/CLAUDE.md)" = "edit two" ]
+}
+
+@test "normal edits sync as before when nothing moved the clone" {
+  setup_two_machines
+  echo "ordinary edit" > "${CLAUDE_HOME_A}/CLAUDE.md"
+
+  sync_as a sync >/dev/null
+
+  [ "$(git -C "${ORIGIN}" show master:dot-claude/CLAUDE.md)" = "ordinary edit" ]
+}
