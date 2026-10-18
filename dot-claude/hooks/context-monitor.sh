@@ -1,123 +1,135 @@
 #!/bin/bash
 # ================================================================
-# context-monitor.sh — Context Window Remaining Capacity Monitor
+# context-monitor.sh — Context Size Monitor
 # ================================================================
 # PURPOSE:
-#   Monitors how much context window remains during a Claude Code
-#   session. Issues graduated warnings (CAUTION → WARNING → CRITICAL
-#   → EMERGENCY) so you never get killed by context exhaustion.
+#   Warns Claude when a session's context grows large, so long
+#   sessions get wrapped up or handed off before they get expensive
+#   or hit auto-compaction mid-task.
 #
 # HOW IT WORKS:
-#   1. Reads Claude Code's debug log to extract actual token usage
-#   2. Falls back to tool-call-count estimation when debug logs
-#      are unavailable
-#   3. Saves current % to /tmp/cc-context-pct (other scripts can
-#      read this)
-#   4. At CRITICAL/EMERGENCY, writes an evacuation template to
-#      your mission file so you can hand off state before /compact
+#   1. Reads the hook's JSON input (session_id, transcript_path)
+#   2. Takes the token usage of the last assistant message in the
+#      transcript: input + cache read + cache creation + output.
+#      That is the context the next request will re-read.
+#   3. Compares it with absolute token thresholds, not a % of the
+#      window. With a 1M window, a % rule first warns at ~600k used,
+#      long after the session has become expensive.
+#   4. Tells Claude through hookSpecificOutput.additionalContext.
+#      Plain stdout from a PostToolUse hook only reaches the debug
+#      log, so Claude never saw the old warnings.
+#   5. State is kept per session, so one session never affects
+#      another.
+#   6. At CRITICAL, writes an evacuation template to the mission
+#      file so state can be handed off before compaction.
 #
 # TRIGGER: PostToolUse (all tools)
 # MATCHER: "" (empty = every tool invocation)
 #
-# CONFIGURATION:
-#   CC_CONTEXT_MISSION_FILE — path to your mission/state file
-#     default: $HOME/mission.md
+# CONFIGURATION (environment variables, all optional):
+#   CC_CONTEXT_CAUTION   — tokens, default 120000
+#   CC_CONTEXT_WARNING   — tokens, default 180000
+#   CC_CONTEXT_CRITICAL  — tokens, default 225000
+#   CC_CONTEXT_MISSION_FILE — default $HOME/mission.md
+#   Defaults sit below CLAUDE_CODE_AUTO_COMPACT_WINDOW=300000.
 #
-# THRESHOLDS (edit below to taste):
-#   CAUTION   = 40%  — be mindful of consumption
-#   WARNING   = 25%  — finish current task, save state
-#   CRITICAL  = 20%  — run /compact immediately
-#   EMERGENCY = 15%  — stop everything, evacuate
+# LEVELS:
+#   CAUTION   — topic done? suggest /clear or a new session
+#   WARNING   — finish the current step, then write a handoff
+#   CRITICAL  — write the handoff now, before auto-compaction
 #
 # BORN FROM:
 #   A session that hit 3% context remaining with no warning.
-#   The agent died mid-task and all in-flight work was lost.
-#   Never again.
+#   Rewritten after the old version was found stuck at EMERGENCY:
+#   ~/.claude/debug did not exist, so it fell back to a tool-call
+#   counter shared by every session in /tmp.
 # ================================================================
 
-STATE_FILE="/tmp/cc-context-state"
-PCT_FILE="/tmp/cc-context-pct"
-COUNTER_FILE="/tmp/cc-context-monitor-count"
+CAUTION="${CC_CONTEXT_CAUTION:-120000}"
+WARNING="${CC_CONTEXT_WARNING:-180000}"
+CRITICAL="${CC_CONTEXT_CRITICAL:-225000}"
 MISSION_FILE="${CC_CONTEXT_MISSION_FILE:-$HOME/mission.md}"
+# Private per-user dir, never shared /tmp: another user could pre-create
+# it or plant values that reach bash arithmetic.
+STATE_DIR="${XDG_RUNTIME_DIR:-$HOME/.cache}/cc-context-monitor"
+is_num() { [[ "$1" =~ ^[0-9]+$ ]]; }
 
-# Tool invocation counter (fallback estimator)
-COUNT=$(cat "$COUNTER_FILE" 2>/dev/null || echo 0)
-COUNT=$((COUNT + 1))
-echo "$COUNT" > "$COUNTER_FILE"
+INPUT=$(cat)
 
-# Check every 3rd invocation to reduce overhead
-# (but always check in CRITICAL/EMERGENCY state)
-LAST_STATE=$(cat "$STATE_FILE" 2>/dev/null || echo "normal")
-if [ $((COUNT % 3)) -ne 0 ] && [ "$LAST_STATE" != "critical" ] && [ "$LAST_STATE" != "emergency" ]; then
-    exit 0
+# Prints "<session_id> <tokens>" or nothing.
+read -r SESSION_ID TOKENS < <(printf '%s' "$INPUT" | python3 -I -c '
+import json, os, sys
+try:
+    d = json.load(sys.stdin)
+    sid = d.get("session_id") or ""
+    path = d.get("transcript_path") or ""
+    if not sid or not os.path.isfile(path):
+        sys.exit(0)
+    with open(path, "rb") as f:
+        f.seek(0, 2)
+        size = f.tell()
+        f.seek(max(0, size - 2_000_000))
+        lines = f.read().decode("utf-8", "replace").splitlines()
+    for line in reversed(lines):
+        if "\"usage\"" not in line:
+            continue
+        try:
+            e = json.loads(line)
+        except ValueError:
+            continue
+        if e.get("type") != "assistant" or e.get("isSidechain"):
+            continue
+        u = (e.get("message") or {}).get("usage") or {}
+        t = sum(int(u.get(k) or 0) for k in (
+            "input_tokens", "cache_read_input_tokens",
+            "cache_creation_input_tokens", "output_tokens"))
+        if t:
+            print(sid, t)
+        break
+except Exception:
+    pass
+' 2>/dev/null)
+
+[ -n "${SESSION_ID:-}" ] && is_num "${TOKENS:-}" || exit 0
+for v in "$CAUTION" "$WARNING" "$CRITICAL"; do is_num "$v" || exit 0; done
+
+mkdir -p -m 700 "$STATE_DIR" 2>/dev/null || exit 0
+# Refuse a symlinked or foreign-owned state dir.
+[ -d "$STATE_DIR" ] && [ ! -L "$STATE_DIR" ] && [ -O "$STATE_DIR" ] || exit 0
+STATE_FILE="$STATE_DIR/${SESSION_ID//[^a-zA-Z0-9_-]/}"
+[ -L "$STATE_FILE" ] && exit 0
+LAST_LEVEL=$(cat "$STATE_FILE" 2>/dev/null || echo 0)
+is_num "$LAST_LEVEL" || LAST_LEVEL=0
+
+if   [ "$TOKENS" -ge "$CRITICAL" ]; then LEVEL=3
+elif [ "$TOKENS" -ge "$WARNING" ];  then LEVEL=2
+elif [ "$TOKENS" -ge "$CAUTION" ];  then LEVEL=1
+else LEVEL=0
 fi
 
-# --- Extract context % from Claude Code debug logs ---
-get_context_pct() {
-    local debug_dir="$HOME/.claude/debug"
-    if [ ! -d "$debug_dir" ]; then
-        echo ""
-        return
-    fi
+# After /clear or compaction the level drops; record it so the
+# warnings can fire again later in the same session.
+echo "$LEVEL" > "$STATE_FILE"
 
-    local latest
-    latest=$(find "$debug_dir" -maxdepth 1 -name '*.txt' -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2)
-    if [ -z "$latest" ]; then
-        echo ""
-        return
-    fi
+# Only speak when the level goes up.
+[ "$LEVEL" -gt "$LAST_LEVEL" ] || exit 0
 
-    # Parse the last autocompact entry for token counts
-    local line
-    line=$(grep 'autocompact:' "$latest" 2>/dev/null | tail -1)
-    if [ -z "$line" ]; then
-        echo ""
-        return
-    fi
-
-    local tokens window
-    tokens=$(echo "$line" | sed 's/.*tokens=\([0-9]*\).*/\1/')
-    window=$(echo "$line" | sed 's/.*effectiveWindow=\([0-9]*\).*/\1/')
-
-    if [ -n "$tokens" ] && [ -n "$window" ] && [ "$window" -gt 0 ] 2>/dev/null; then
-        local pct
-        pct=$(( (window - tokens) * 100 / window ))
-        echo "$pct"
-    else
-        echo ""
-    fi
-}
-
-CONTEXT_PCT=$(get_context_pct)
-
-# Fallback: estimate from tool call count when debug logs unavailable
-# Assumes ~180 tool calls fills ~100% of context (conservative)
-if [ -z "$CONTEXT_PCT" ]; then
-    CONTEXT_PCT=$(( 100 - (COUNT * 100 / 180) ))
-    if [ "$CONTEXT_PCT" -lt 0 ]; then CONTEXT_PCT=0; fi
-    SOURCE="estimate"
-else
-    SOURCE="debug"
-fi
-
-echo "$CONTEXT_PCT" > "$PCT_FILE"
-
+K=$((TOKENS / 1000))
 TIMESTAMP=$(date '+%Y-%m-%d %H:%M')
 
 # --- Evacuation template (with cooldown to prevent spam) ---
-EVAC_COOLDOWN_FILE="/tmp/cc-context-evac-last"
+EVAC_COOLDOWN_FILE="$STATE_DIR/evac-last"
 EVAC_COOLDOWN_SEC=1800  # 30 min cooldown between template generations
 
 generate_evacuation_template() {
     local level="$1"
 
-    # Cooldown check
     if [ -f "$EVAC_COOLDOWN_FILE" ]; then
-        local last_ts now_ts diff
+        local last_ts now_ts
         last_ts=$(cat "$EVAC_COOLDOWN_FILE" 2>/dev/null || echo 0)
+        is_num "$last_ts" || last_ts=0
         now_ts=$(date +%s)
-        diff=$((now_ts - last_ts))
-        if [ "$diff" -lt "$EVAC_COOLDOWN_SEC" ]; then
+        if [ $((now_ts - last_ts)) -lt "$EVAC_COOLDOWN_SEC" ]; then
             return
         fi
     fi
@@ -128,8 +140,6 @@ generate_evacuation_template() {
     fi
 
     date +%s > "$EVAC_COOLDOWN_FILE"
-
-    # Create mission file directory if needed
     mkdir -p "$(dirname "$MISSION_FILE")"
 
     cat >> "$MISSION_FILE" << EVAC_EOF
@@ -150,50 +160,12 @@ generate_evacuation_template() {
 EVAC_EOF
 }
 
-# --- Graduated warnings ---
-if [ "$CONTEXT_PCT" -le 15 ]; then
-    # EMERGENCY
-    if [ "$LAST_STATE" != "emergency" ]; then
-        echo "emergency" > "$STATE_FILE"
-        generate_evacuation_template "EMERGENCY"
-    fi
-    echo ""
-    echo "EMERGENCY: Context remaining ${CONTEXT_PCT}% (${SOURCE})"
-    echo "Run /compact IMMEDIATELY. Evacuation template written to ${MISSION_FILE}."
-    echo "1. Fill in the [TODO] fields in the template"
-    echo "2. Run /compact"
-    echo "3. If needed, restart and resume from mission file"
-    echo "No further work allowed. Evacuate only."
+case "$LEVEL" in
+    1) MSG="CONTEXT CAUTION: about ${K}k tokens in context. Every turn re-reads all of it. If the current topic is finished, suggest /clear or a new session to the user before starting anything unrelated." ;;
+    2) MSG="CONTEXT WARNING: about ${K}k tokens in context. Finish the current step, then write a handoff (state, decisions, next steps) and suggest continuing in a new session. Do not start new large work here." ;;
+    3) generate_evacuation_template "CRITICAL"
+       MSG="CONTEXT CRITICAL: about ${K}k tokens in context; auto-compaction is close. Stop and write the handoff now. An evacuation template is in ${MISSION_FILE}. Then tell the user to continue in a new session." ;;
+esac
 
-elif [ "$CONTEXT_PCT" -le 20 ]; then
-    # CRITICAL
-    if [ "$LAST_STATE" != "critical" ]; then
-        echo "critical" > "$STATE_FILE"
-        generate_evacuation_template "CRITICAL"
-    fi
-    echo ""
-    echo "CRITICAL: Context remaining ${CONTEXT_PCT}% (${SOURCE})"
-    echo "Run /compact IMMEDIATELY. Evacuation template written to ${MISSION_FILE}."
-    echo "1. Save current task state to the template"
-    echo "2. Run /compact"
-
-elif [ "$CONTEXT_PCT" -le 25 ]; then
-    # WARNING
-    if [ "$LAST_STATE" != "warning" ]; then
-        echo "warning" > "$STATE_FILE"
-        echo ""
-        echo "WARNING: Context remaining ${CONTEXT_PCT}% (${SOURCE})"
-        echo "Do not start new large tasks. Finish current work and save state."
-    fi
-
-elif [ "$CONTEXT_PCT" -le 40 ]; then
-    # CAUTION
-    if [ "$LAST_STATE" != "caution" ]; then
-        echo "caution" > "$STATE_FILE"
-        echo ""
-        echo "CAUTION: Context remaining ${CONTEXT_PCT}% (${SOURCE})"
-        echo "Be mindful of context consumption. Keep interactions concise."
-    fi
-fi
-
+python3 -I -c 'import json,sys; print(json.dumps({"hookSpecificOutput": {"hookEventName": "PostToolUse", "additionalContext": sys.argv[1]}}))' "$MSG"
 exit 0
