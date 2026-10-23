@@ -9,8 +9,12 @@
     "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "300000"
   },
   "deniedMcpServers": [
-    { "serverName": "github" },
-    { "serverName": "context7" }
+    {
+      "serverName": "github"
+    },
+    {
+      "serverName": "context7"
+    }
   ],
   "permissions": {
     "allow": [
@@ -84,6 +88,15 @@
           {
             "type": "command",
             "command": "\"$HOME/.claude/hooks/secret-guard.sh\""
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$HOME/.claude/hooks/attribution-guard.sh\""
           }
         ]
       }
