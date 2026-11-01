@@ -3,19 +3,31 @@
 # real local paths. Copy-based (not symlinked) so a tool writing a file via
 # write-temp-then-rename can never silently break the sync.
 
+# The exclude file for KIND, or /dev/null (no exclusions) when there's none.
+_sync_exclude_file() {
+  if [ -n "$1" ] && [ -f "$1/$2" ]; then echo "$1/$2"; else echo /dev/null; fi
+}
+
 sync_capture() {
   local repo_dir="$1"
   local claude_home="$2"
   local agents_home="$3"
   local memory_dir="$4"
+  # Optional: a directory holding "agents", "hooks" and "skills" files of
+  # rsync exclude patterns (one "/<name>" per line). Excluded names are
+  # neither copied nor deleted on the repo side. Used for machine profiles.
+  local exclude_dir="${5:-}"
 
   mkdir -p "${repo_dir}/dot-claude/agents" "${repo_dir}/dot-claude/hooks" "${repo_dir}/dot-agents/skills" "${repo_dir}/memory"
 
   [ -f "${claude_home}/CLAUDE.md" ] && cp "${claude_home}/CLAUDE.md" "${repo_dir}/dot-claude/CLAUDE.md"
   [ -f "${claude_home}/settings.json" ] && cp "${claude_home}/settings.json" "${repo_dir}/dot-claude/settings.json"
-  [ -d "${claude_home}/agents" ] && rsync -a --delete --exclude=.gitkeep "${claude_home}/agents/" "${repo_dir}/dot-claude/agents/"
-  [ -d "${claude_home}/hooks" ] && rsync -a --delete --exclude=.gitkeep "${claude_home}/hooks/" "${repo_dir}/dot-claude/hooks/"
-  [ -d "${agents_home}/skills" ] && rsync -a --delete --exclude=.gitkeep "${agents_home}/skills/" "${repo_dir}/dot-agents/skills/"
+  [ -d "${claude_home}/agents" ] && rsync -a --delete --exclude=.gitkeep \
+    --exclude-from="$(_sync_exclude_file "${exclude_dir}" agents)" "${claude_home}/agents/" "${repo_dir}/dot-claude/agents/"
+  [ -d "${claude_home}/hooks" ] && rsync -a --delete --exclude=.gitkeep \
+    --exclude-from="$(_sync_exclude_file "${exclude_dir}" hooks)" "${claude_home}/hooks/" "${repo_dir}/dot-claude/hooks/"
+  [ -d "${agents_home}/skills" ] && rsync -a --delete --exclude=.gitkeep \
+    --exclude-from="$(_sync_exclude_file "${exclude_dir}" skills)" "${agents_home}/skills/" "${repo_dir}/dot-agents/skills/"
   [ -d "${memory_dir}" ] && rsync -a --delete --exclude=.gitkeep "${memory_dir}/" "${repo_dir}/memory/"
   # Guards above may be false as the last statement; force success so a
   # missing directory doesn't abort the whole script under set -e.

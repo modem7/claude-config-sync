@@ -50,6 +50,7 @@ directory unless it differs.
 ~/claude-config/claude-sync.sh doctor            # check for a stuck sync (report only)
 ~/claude-config/claude-sync.sh doctor remediate  # check, and fix what's safely fixable
 ~/claude-config/claude-sync.sh override list     # this machine's settings overrides (see "Per-machine overrides")
+~/claude-config/claude-sync.sh profile list      # this machine's profile (see "Per-machine profiles")
 ```
 
 `push`/`sync`/`bootstrap` skip (without committing anything) if this clone
@@ -79,6 +80,12 @@ does **not** touch your real Claude Code config (`~/.claude/CLAUDE.md`,
 actual config gets re-adopted fresh by the bootstrap that follows. Refuses
 to run if the local clone has uncommitted or untracked changes, so it can't
 silently discard something you meant to keep.
+
+Machine profiles (`machines/<profile>/`) and settings overrides
+(`machines/<name>.settings.json`) are shared repo content, so repair keeps
+them. It only removes the `.conf`, so if this machine followed another
+profile (a `PROFILE=` line), give it again: `install.sh --repair --profile
+<name>`.
 
 **Note:** `install.sh` has no built-in repo URL fallback — `--repair` needs
 one to re-clone from, same as a first-time install. Run it from a terminal
@@ -153,6 +160,61 @@ in question:
 Editing the file by hand works too; the next `sync` picks it up. Override
 files live in `machines/`, so they're never published to the public mirror.
 
+## Per-machine profiles
+
+Overrides cover `settings.json`. A *profile* does the same for agents,
+hooks, skills and `CLAUDE.md`: one machine can replace, add or hide entries
+without changing the shared files.
+
+```
+machines/<profile>/agents/<name>.md         replaces or adds ~/.claude/agents/<name>.md
+machines/<profile>/hooks/<name>.sh          replaces or adds ~/.claude/hooks/<name>.sh (keep it executable)
+machines/<profile>/skills/<name>/           replaces or adds ~/.agents/skills/<name>/ (the whole directory)
+machines/<profile>/<kind>/<name>.disabled   hides the shared <name> on this machine (an empty file)
+machines/<profile>/CLAUDE.append.md         appended to ~/.claude/CLAUDE.md
+```
+
+The profile name is the hostname, unless `machines/<hostname>.conf` has a
+`PROFILE=<name>` line: then the machine follows that profile instead, and
+uses `machines/<name>.settings.json` as its settings override. An entry the
+shared config doesn't have is simply machine-only.
+
+On apply, the shared files go into place first and the profile is layered
+on top: entries are copied over, disabled ones are removed, and
+`CLAUDE.append.md` is added after a `<!-- claude-sync:profile-append -->`
+line. On capture, everything the profile mentions stays out of the shared
+copy, and the append block is stripped from `CLAUDE.md`. If you edit a
+profile entry locally after it was applied, the edit goes back into the
+profile, not the shared copy. A profile entry that hasn't been applied yet
+(just pulled, or on a freshly restored machine) is never overwritten by
+whatever happens to be on disk. Take an entry out of the profile and the
+machine goes back to the shared version on its next sync.
+
+```bash
+~/claude-config/claude-sync.sh profile list              # this machine's profile and everything in it
+~/claude-config/claude-sync.sh profile show other-host   # another profile
+~/claude-config/claude-sync.sh profile use other-host    # follow machines/other-host/ (sets PROFILE= in this machine's conf)
+~/claude-config/claude-sync.sh profile copy other-host   # snapshot it, and its settings override, into this machine's own profile
+```
+
+`profile copy` lists the executable hook scripts it will copy and asks
+first (`--yes` skips the question). It refuses to replace a profile this
+machine already has unless you add `--force`. `profile use` and `profile
+copy` commit and push like `override add`. `doctor` reports a `.disabled`
+marker that hides nothing, live files that differ from the shared config
+plus the profile, and hook commands in `settings.json` that point at a
+script that doesn't exist (e.g. a hook you disabled that is still wired up).
+
+**Restoring on new infrastructure:** a rebuilt machine with the same
+hostname just works, since its conf and profile are in the repo. With a
+different hostname, run `install.sh --profile <name>` (or set
+`CLAUDE_SYNC_PROFILE=<name>`) to follow the old profile, or `profile use
+<name>` later. For an independent copy that can drift from the original,
+use `profile copy <name>` instead.
+
+Profiles live in `machines/`, so they're never published to the public
+mirror.
+
 ## My plugins and skills (opinionated — take or leave)
 
 `dot-claude/settings.json`'s `enabledPlugins` and `dot-agents/skills/` ship
@@ -174,7 +236,7 @@ Plugins (all from `claude-plugins-official` unless noted):
 - `i-have-adhd` — ADHD-friendly task/focus workflow
 
 Skills in `dot-agents/skills/` (`find-skills`,
-`woodpecker-cli`) — a few example personal skills as a starting point; prune or
+`usage-audit`) — a few example personal skills as a starting point; prune or
 replace with your own.
 
 For a broader look at what's out there beyond my picks, browse

@@ -64,7 +64,9 @@ claude-config/
 ├── tests/
 │   └── *.bats                      # machine_conf, memory_path, safety, skills_symlink, sync_cli, sync_files
 ├── machines/
-│   └── <hostname>.conf
+│   ├── <hostname>.conf
+│   ├── <profile>.settings.json     # optional settings override (see addendum 2026-11-01)
+│   └── <profile>/                  # optional machine profile (see addendum 2026-11-01)
 ├── dot-claude/
 │   ├── CLAUDE.md
 │   ├── settings.json
@@ -88,6 +90,10 @@ claude-config/
 | `dot-claude/agents/` | `~/.claude/agents/` | currently empty; ready for future reusable subagent `.md` files |
 | `dot-agents/skills/` | `~/.agents/skills/` | personal skill library (e.g. `release`) |
 | `memory/*` | resolved per-machine memory dir (see below) | "global" auto-memory content |
+| `dot-claude/hooks/` | `~/.claude/hooks/` | hook scripts (see addendum 2026-07-30) |
+| `machines/<profile>/{agents,hooks,skills}/` | layered over the three directories above | per-machine profile, applied after the shared copy (see addendum 2026-11-01) |
+| `machines/<profile>/CLAUDE.append.md` | appended to `~/.claude/CLAUDE.md` | after a `<!-- claude-sync:profile-append -->` line; stripped again on capture |
+| `machines/<profile>.settings.json` | merged into `~/.claude/settings.json` | per-machine settings override |
 
 **Never touched:** `.credentials.json`, `~/.claude.json`, plugin caches,
 `sessions/`, `session-env/`, `shell-snapshots/`, `security/`, `tasks/`,
@@ -278,3 +284,42 @@ couple of pre-existing style-level shellcheck findings (`SC2034` in
 `api-error-alert.sh`, `SC2001` x2 in `context-monitor.sh`) that would need
 fixing first to avoid breaking CI. Left as a follow-up rather than folded
 into this change.
+
+## Addendum (2026-11-01): per-machine profiles
+
+`machines/<hostname>.settings.json` let one machine differ in
+`settings.json`, but agents, hooks, skills and `CLAUDE.md` were all or
+nothing: a skill tied to one self-hosted server either went to every
+machine or had to be special-cased (the old `rm -rf` of `woodpecker-cli` in
+`publish-public.sh`). A machine profile, `machines/<profile>/`, now covers
+those too: `agents/`, `hooks/` and `skills/` entries replace or add the
+shared entry of the same top-level name (a skill directory is replaced
+whole, never merged), a `<name>.disabled` marker hides a shared entry, and
+`CLAUDE.append.md` is appended to `CLAUDE.md` after a
+`<!-- claude-sync:profile-append -->` line. The profile name is `PROFILE=`
+in `machines/<hostname>.conf`, else the hostname; the settings override
+path follows the profile name, so a machine that follows another profile
+gets its settings override too. With no profile, behaviour is unchanged.
+
+Implementation is `lib/profile.sh`. Apply runs after `sync_apply`; a
+local-only stamp (`~/.claude/.claude-sync-applied-profile/`, outside
+everything capture copies) holds a snapshot of what was applied. Capture
+treats every name in the profile or the stamp as owned: it is excluded
+from the shared `rsync` (so it neither leaks into nor deletes the shared
+copy), and a live owned entry is written back into the profile only when it
+differs from the stamp's snapshot. No snapshot means "not applied yet", the
+same rule as `overlay_split`'s `override_before`, which is what stops a
+restored machine's first sync (capture runs before apply) from overwriting
+its profile with whatever was on disk. `live_matches_commit` runs the same
+capture, so the stale-clone check stays profile-aware. Apply also removes
+the previously applied entries before `sync_apply`, since `rsync`'s
+size-and-mtime check could otherwise skip restoring a shared file of the
+same size checked out in the same second.
+
+Commands: `profile list|show|use|copy`; `install.sh --profile <name>`
+(or `CLAUDE_SYNC_PROFILE`) writes `PROFILE=` into a new conf. `doctor`
+reports stale `.disabled` markers, live/profile mismatches (re-applied by
+`remediate` unless that would discard a local edit) and hook commands in
+`settings.json` that point at a missing script. `publish-public.sh` now
+aborts if anything under `machines/` or `memory/` reaches the public tree;
+`woodpecker-cli` moved into a machine profile, so it needs no special case.

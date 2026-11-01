@@ -55,3 +55,24 @@ setup() {
   wire_skill_symlinks "${REPO}" "${CLAUDE_HOME}" "${AGENTS_HOME}"
   [ -L "${CLAUDE_HOME}/skills/foreign" ]
 }
+
+@test "wire_skill_symlinks with a profile links profile skills and drops a disabled skill's link" {
+  PROFILE_DIR="${BATS_TEST_TMPDIR}/repo/machines/host-a"
+  mkdir -p "${PROFILE_DIR}/skills/machine-only" "${AGENTS_HOME}/skills/machine-only"
+  ln -s "${AGENTS_HOME}/skills/release" "${CLAUDE_HOME}/skills/release"
+  touch "${PROFILE_DIR}/skills/release.disabled"
+
+  wire_skill_symlinks "${REPO}" "${CLAUDE_HOME}" "${AGENTS_HOME}" "${PROFILE_DIR}"
+
+  [ -L "${CLAUDE_HOME}/skills/machine-only" ]
+  [ ! -L "${CLAUDE_HOME}/skills/release" ]
+}
+
+@test "wire_skill_symlinks with a profile never removes a real directory of a disabled skill's name" {
+  PROFILE_DIR="${BATS_TEST_TMPDIR}/repo/machines/host-a"
+  mkdir -p "${PROFILE_DIR}/skills" "${CLAUDE_HOME}/skills/release"
+  touch "${PROFILE_DIR}/skills/release.disabled"
+  wire_skill_symlinks "${REPO}" "${CLAUDE_HOME}" "${AGENTS_HOME}" "${PROFILE_DIR}"
+  [ -d "${CLAUDE_HOME}/skills/release" ]
+  [ ! -L "${CLAUDE_HOME}/skills/release" ]
+}

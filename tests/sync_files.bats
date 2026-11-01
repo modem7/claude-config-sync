@@ -116,3 +116,19 @@ setup() {
 
   [ ! -d "${AGENTS_HOME}/skills/local-only" ]
 }
+
+@test "sync_capture with an exclude dir neither copies nor deletes the excluded names" {
+  sync_capture "${REPO}" "${CLAUDE_HOME}" "${AGENTS_HOME}" "${MEMORY_DIR}"
+  mkdir -p "${AGENTS_HOME}/skills/machine-only" "${BATS_TEST_TMPDIR}/excludes"
+  echo "machine only" > "${AGENTS_HOME}/skills/machine-only/SKILL.md"
+  echo "local copy" > "${AGENTS_HOME}/skills/release/SKILL.md"
+  rm -f "${CLAUDE_HOME}/hooks/example-guard.sh"
+  printf '/machine-only\n/release\n' > "${BATS_TEST_TMPDIR}/excludes/skills"
+  printf '/example-guard.sh\n' > "${BATS_TEST_TMPDIR}/excludes/hooks"
+
+  sync_capture "${REPO}" "${CLAUDE_HOME}" "${AGENTS_HOME}" "${MEMORY_DIR}" "${BATS_TEST_TMPDIR}/excludes"
+
+  [ ! -e "${REPO}/dot-agents/skills/machine-only" ]
+  [ "$(cat "${REPO}/dot-agents/skills/release/SKILL.md")" = "release skill body" ]
+  [ -x "${REPO}/dot-claude/hooks/example-guard.sh" ]
+}

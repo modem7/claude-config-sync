@@ -14,11 +14,19 @@ source "${SCRIPT_DIR}/lib/sync-files.sh"
 source "${SCRIPT_DIR}/lib/skills-symlink.sh"
 # shellcheck source=lib/settings-overlay.sh
 source "${SCRIPT_DIR}/lib/settings-overlay.sh"
+# shellcheck source=lib/profile.sh
+source "${SCRIPT_DIR}/lib/profile.sh"
 
 REPO_DIR="${SCRIPT_DIR}"
 CLAUDE_HOME="${CLAUDE_SYNC_CLAUDE_HOME:-${HOME}/.claude}"
 AGENTS_HOME="${CLAUDE_SYNC_AGENTS_HOME:-${HOME}/.agents}"
 HOSTNAME_VAL="${CLAUDE_SYNC_HOSTNAME:-$(hostname)}"
+
+# This machine's profile name: PROFILE= in its conf, else the hostname.
+# Read afresh each time, since a pull or 'profile use' can change it.
+current_profile() {
+  profile_resolve_name "${REPO_DIR}" "${HOSTNAME_VAL}"
+}
 
 # Empty when there's nothing to compare against yet (e.g. a repo that was
 # git-init'd rather than cloned, with no shared history at all) - only a
@@ -64,6 +72,9 @@ record_applied_commit() {
 
 # True when the live config is exactly what a clean apply of commit $1 would
 # have left behind, i.e. nothing has been edited locally since that commit.
+# The capture into the scratch tree is the same one a real capture does, so
+# owned profile entries are judged against the stamp (an edit shows up as a
+# write-back into machines/<profile>/) and the append block is stripped.
 live_matches_commit() {
   local sha="$1" memory_dir="$2" tmp override_stamp rc=0
   tmp="$(mktemp -d)"
@@ -73,7 +84,7 @@ live_matches_commit() {
   mkdir -p "${tmp}/applied/dot-claude/agents" "${tmp}/applied/dot-claude/hooks" \
     "${tmp}/applied/dot-agents/skills" "${tmp}/applied/memory"
   cp -a "${tmp}/applied" "${tmp}/live"
-  sync_capture "${tmp}/live" "${CLAUDE_HOME}" "${AGENTS_HOME}" "${memory_dir}"
+  profile_capture "${tmp}/live" "${CLAUDE_HOME}" "${AGENTS_HOME}" "${memory_dir}" "$(current_profile)"
   override_stamp="$(applied_override_stamp)"
   if [ -f "${override_stamp}" ] && [ -f "${tmp}/applied/dot-claude/settings.json" ]; then
     overlay_merge "${tmp}/applied/dot-claude/settings.json" "${override_stamp}" > "${tmp}/merged" \
@@ -119,8 +130,9 @@ do_capture_and_commit() {
   # With a per-machine override, local settings.json = shared * override, so
   # it can't be copied into the shared file verbatim. Keep the shared file
   # as it was before capture, so the override's leaves can be split back out.
-  local override stamp shared_before="" override_before=""
-  override="$(overlay_path "${REPO_DIR}" "${HOSTNAME_VAL}")"
+  local profile override stamp shared_before="" override_before=""
+  profile="$(current_profile)"
+  override="$(overlay_path "${REPO_DIR}" "${profile}")"
   stamp="$(applied_override_stamp)"
   if [ -f "${CLAUDE_HOME}/settings.json" ] && { [ -f "${override}" ] || [ -f "${stamp}" ]; }; then
     shared_before="$(mktemp)"
@@ -137,7 +149,9 @@ do_capture_and_commit() {
     if [ -f "${stamp}" ]; then cp "${stamp}" "${override_before}"; else echo '{}' > "${override_before}"; fi
   fi
 
-  sync_capture "${REPO_DIR}" "${CLAUDE_HOME}" "${AGENTS_HOME}" "${memory_dir}"
+  # Profile-owned agents, hooks and skills stay out of the shared copy; a
+  # local edit to one goes back into machines/<profile>/ instead.
+  profile_capture "${REPO_DIR}" "${CLAUDE_HOME}" "${AGENTS_HOME}" "${memory_dir}" "${profile}" true
 
   if [ -n "${shared_before}" ]; then
     overlay_split "${CLAUDE_HOME}/settings.json" "${shared_before}" "${override_before}" \
@@ -186,14 +200,28 @@ do_push() {
   fi
 }
 
+# Every apply goes through here, so the profile is never left out: live
+# reverting to the shared version while the stamp still holds the profile
+# version would make the next capture write the shared version into the
+# profile.
+apply_local_config() {
+  local memory_dir="$1"
+  local mirror="${2:-true}"
+  local profile
+  profile="$(current_profile)"
+  profile_unapply "${CLAUDE_HOME}" "${AGENTS_HOME}"
+  sync_apply "${REPO_DIR}" "${CLAUDE_HOME}" "${AGENTS_HOME}" "${memory_dir}" "${mirror}"
+  apply_settings_overlay
+  profile_apply "${REPO_DIR}" "${CLAUDE_HOME}" "${AGENTS_HOME}" "${profile}"
+  wire_skill_symlinks "${REPO_DIR}" "${CLAUDE_HOME}" "${AGENTS_HOME}" "$(profile_dir "${REPO_DIR}" "${profile}")"
+}
+
 do_apply() {
   local project_path memory_dir
   project_path="$(require_project_path)"
   memory_dir="$(resolve_memory_dir "${CLAUDE_HOME}" "${project_path}")"
 
-  sync_apply "${REPO_DIR}" "${CLAUDE_HOME}" "${AGENTS_HOME}" "${memory_dir}"
-  apply_settings_overlay
-  wire_skill_symlinks "${REPO_DIR}" "${CLAUDE_HOME}" "${AGENTS_HOME}"
+  apply_local_config "${memory_dir}"
   record_applied_commit
 }
 
@@ -208,7 +236,7 @@ applied_override_stamp() {
 # sync_apply just copied into place, and records what was layered.
 apply_settings_overlay() {
   local override merged stamp
-  override="$(overlay_path "${REPO_DIR}" "${HOSTNAME_VAL}")"
+  override="$(overlay_path "${REPO_DIR}" "$(current_profile)")"
   stamp="$(applied_override_stamp)"
   if [ ! -f "${override}" ] || [ ! -f "${REPO_DIR}/dot-claude/settings.json" ]; then
     rm -f "${stamp}"
@@ -223,7 +251,7 @@ apply_settings_overlay() {
 # What this machine's settings.json should be after a clean apply.
 expected_local_settings() {
   local override
-  override="$(overlay_path "${REPO_DIR}" "${HOSTNAME_VAL}")"
+  override="$(overlay_path "${REPO_DIR}" "$(current_profile)")"
   if [ -f "${override}" ]; then
     overlay_merge "${REPO_DIR}/dot-claude/settings.json" "${override}"
   else
@@ -239,9 +267,7 @@ do_apply_merge() {
   project_path="$(require_project_path)"
   memory_dir="$(resolve_memory_dir "${CLAUDE_HOME}" "${project_path}")"
 
-  sync_apply "${REPO_DIR}" "${CLAUDE_HOME}" "${AGENTS_HOME}" "${memory_dir}" "false"
-  apply_settings_overlay
-  wire_skill_symlinks "${REPO_DIR}" "${CLAUDE_HOME}" "${AGENTS_HOME}"
+  apply_local_config "${memory_dir}" "false"
 }
 
 DOCTOR_ISSUES=0
@@ -297,19 +323,57 @@ do_doctor() {
       && ! diff -q "${CLAUDE_HOME}/settings.json" <(expected_local_settings) >/dev/null 2>&1; then
       doctor_report "local ~/.claude/settings.json differs from the repo's dot-claude/settings.json (plus this machine's overrides)."
       if [ "${remediate}" = "true" ]; then
-        sync_apply "${REPO_DIR}" "${CLAUDE_HOME}" "${AGENTS_HOME}" "${memory_dir}"
-        apply_settings_overlay
-        wire_skill_symlinks "${REPO_DIR}" "${CLAUDE_HOME}" "${AGENTS_HOME}"
+        apply_local_config "${memory_dir}"
         record_applied_commit
         echo "  -> re-applied the repo's settings.json to local."
       fi
     fi
+    doctor_profile "${remediate}" "${memory_dir}"
   fi
+
+  # A hook command pointing at a script that isn't there (e.g. a hook a
+  # profile disabled but settings.json still wires up) fails on every use.
+  local missing
+  while IFS= read -r missing; do
+    doctor_report "settings.json runs ${missing}, which does not exist. Remove that hook from settings.json (or 'override add' it away on this machine), or restore the script."
+  done < <(profile_dangling_hook_refs "${CLAUDE_HOME}" "${CLAUDE_HOME}/settings.json")
 
   if [ "${DOCTOR_ISSUES}" -eq 0 ]; then
     echo "No issues found - sync is healthy."
   fi
   return "${DOCTOR_ISSUES}"
+}
+
+# Profile checks, only when a profile or its stamp exists. Stale markers are
+# reported, not fixed: that would mean editing the shared repo. A live
+# mismatch is re-applied, unless that would discard a local edit to an
+# owned entry that a sync would write back into the profile first.
+doctor_profile() {
+  local remediate="$1"
+  local memory_dir="$2"
+  local profile pdir kind name mismatches
+  profile="$(current_profile)"
+  pdir="$(profile_dir "${REPO_DIR}" "${profile}")"
+  profile_in_use "${REPO_DIR}" "${CLAUDE_HOME}" "${profile}" || return 0
+
+  for kind in "${PROFILE_KINDS[@]}"; do
+    while IFS= read -r name; do
+      [ -e "$(profile_shared_dir "${REPO_DIR}" "${kind}")/${name}" ] && continue
+      doctor_report "machines/${profile}/${kind}/${name}.disabled hides nothing: there is no shared ${kind} entry called ${name}. Delete the marker."
+    done < <(profile_disabled "${pdir}" "${kind}")
+  done
+
+  mismatches="$(profile_live_mismatches "${REPO_DIR}" "${CLAUDE_HOME}" "${AGENTS_HOME}" "${profile}")"
+  [ -n "${mismatches}" ] || return 0
+  doctor_report "live config differs from the shared config plus profile '${profile}' for: $(echo "${mismatches}" | paste -sd, - | sed 's/,/, /g')."
+  [ "${remediate}" = "true" ] || return 0
+  if profile_has_local_edits "${REPO_DIR}" "${CLAUDE_HOME}" "${AGENTS_HOME}" "${profile}"; then
+    echo "  -> not re-applied: an entry of profile '${profile}' was edited locally. Run 'claude-sync.sh sync' to keep the edit in the profile."
+    return 0
+  fi
+  apply_local_config "${memory_dir}"
+  record_applied_commit
+  echo "  -> re-applied the shared config and profile '${profile}' to local."
 }
 
 commit_if_changed() {
@@ -320,19 +384,21 @@ commit_if_changed() {
 }
 
 # claude-sync.sh override add|remove|list [JQ_PATH]
+# The override file follows the profile name, so a machine following
+# another profile shares that profile's settings override.
 do_override() {
   local action="${1:-list}"
   local expr="${2:-}"
   case "${action}" in
     list)
-      overlay_list "${REPO_DIR}" "${HOSTNAME_VAL}"
+      overlay_list "${REPO_DIR}" "$(current_profile)"
       ;;
     add)
       [ -n "${expr}" ] || usage
       # Capture first so any other pending local edits are committed as
       # shared, then move this one key out of the shared file.
       do_capture_and_commit
-      overlay_add "${REPO_DIR}" "${HOSTNAME_VAL}" "${CLAUDE_HOME}/settings.json" "${expr}"
+      overlay_add "${REPO_DIR}" "$(current_profile)" "${CLAUDE_HOME}/settings.json" "${expr}"
       commit_if_changed "override: ${HOSTNAME_VAL} keeps ${expr} to itself"
       do_integrate
       do_push
@@ -344,7 +410,7 @@ do_override() {
       # Capture while the override still owns the key, so its local value
       # isn't mistaken for a new shared value, then drop it and re-apply.
       do_capture_and_commit
-      overlay_remove "${REPO_DIR}" "${HOSTNAME_VAL}" "${expr}"
+      overlay_remove "${REPO_DIR}" "$(current_profile)" "${expr}"
       commit_if_changed "override: ${HOSTNAME_VAL} stops overriding ${expr}"
       do_integrate
       do_push
@@ -357,9 +423,124 @@ do_override() {
   esac
 }
 
+die() {
+  echo "$1" >&2
+  exit 1
+}
+
+# claude-sync.sh profile list|show NAME|copy FROM [--force] [--yes]|use NAME
+do_profile() {
+  local action="${1:-list}"
+  shift || true
+  local profile conf
+  profile="$(current_profile)"
+  conf="$(machine_conf_path "${REPO_DIR}" "${HOSTNAME_VAL}")"
+  case "${action}" in
+    list)
+      if read_machine_profile "${conf}" >/dev/null; then
+        echo "${HOSTNAME_VAL} follows profile '${profile}' (PROFILE= in machines/${HOSTNAME_VAL}.conf):"
+      else
+        echo "${HOSTNAME_VAL} uses its own profile '${profile}':"
+      fi
+      profile_describe "${REPO_DIR}" "${profile}"
+      ;;
+    show)
+      [ -n "${1:-}" ] || usage
+      profile_valid_name "$1" || die "Not a valid profile name: $1"
+      echo "Profile '$1':"
+      profile_describe "${REPO_DIR}" "$1"
+      ;;
+    copy)
+      do_profile_copy "$@"
+      ;;
+    use)
+      [ -n "${1:-}" ] || usage
+      profile_valid_name "$1" || die "Not a valid profile name: $1"
+      # Going back to the machine's own profile needs no directory.
+      if [ "$1" != "${HOSTNAME_VAL}" ] && [ ! -d "$(profile_dir "${REPO_DIR}" "$1")" ]; then
+        die "No profile called '$1': machines/$1/ does not exist."
+      fi
+      # Capture under the old profile first, so pending edits land in it.
+      do_capture_and_commit
+      if [ "$1" = "${HOSTNAME_VAL}" ]; then
+        write_machine_profile "${conf}" ""
+      else
+        write_machine_profile "${conf}" "$1"
+      fi
+      commit_if_changed "profile: ${HOSTNAME_VAL} uses profile $1"
+      do_integrate
+      do_push
+      do_apply
+      echo "${HOSTNAME_VAL} now follows profile '$1'; edits to its entries go to machines/$1/."
+      ;;
+    *)
+      usage
+      ;;
+  esac
+}
+
+# Snapshots another profile (machines/<from>/ and its settings override)
+# into this machine's own, machines/<hostname>/, and makes this machine
+# follow it. Hook scripts run automatically, so they're shown first.
+do_profile_copy() {
+  local from="" force=false yes=false arg
+  for arg in "$@"; do
+    case "${arg}" in
+      --force) force=true ;;
+      --yes) yes=true ;;
+      -*) usage ;;
+      *) [ -z "${from}" ] || usage; from="${arg}" ;;
+    esac
+  done
+  [ -n "${from}" ] || usage
+  profile_valid_name "${from}" || die "Not a valid profile name: ${from}"
+  local own="${HOSTNAME_VAL}" src dest conf hooks answer=""
+  [ "${from}" != "${own}" ] || die "'${from}' is already this machine's own profile."
+  src="$(profile_dir "${REPO_DIR}" "${from}")"
+  dest="$(profile_dir "${REPO_DIR}" "${own}")"
+  conf="$(machine_conf_path "${REPO_DIR}" "${own}")"
+  if [ ! -d "${src}" ] && [ ! -f "$(overlay_path "${REPO_DIR}" "${from}")" ]; then
+    die "No profile called '${from}': neither machines/${from}/ nor machines/${from}.settings.json exists."
+  fi
+  if { [ -e "${dest}" ] || [ -f "$(overlay_path "${REPO_DIR}" "${own}")" ]; } && [ "${force}" != true ]; then
+    die "${own} already has its own profile (machines/${own}/ or machines/${own}.settings.json). Re-run with --force to replace it."
+  fi
+
+  hooks=""
+  [ -d "${src}/hooks" ] && hooks="$(find "${src}/hooks" -type f -perm -u+x | LC_ALL=C sort)"
+  if [ -n "${hooks}" ]; then
+    echo "These executable hook scripts will be copied, and run by Claude Code on this machine:"
+    echo "${hooks//${REPO_DIR}\//  }"
+    if [ "${yes}" != true ]; then
+      read -r -p "Copy them? [y/N] " answer || answer=""
+      case "${answer}" in
+        y|Y|yes|YES) ;;
+        *) die "Aborted: nothing was copied." ;;
+      esac
+    fi
+  fi
+
+  do_capture_and_commit
+  rm -rf "${dest}"
+  [ ! -d "${src}" ] || cp -a "${src}" "${dest}"
+  rm -f "$(overlay_path "${REPO_DIR}" "${own}")"
+  if [ -f "$(overlay_path "${REPO_DIR}" "${from}")" ]; then
+    cp "$(overlay_path "${REPO_DIR}" "${from}")" "$(overlay_path "${REPO_DIR}" "${own}")"
+  fi
+  # The copy only takes effect if this machine follows its own profile.
+  write_machine_profile "${conf}" ""
+  commit_if_changed "profile: ${own} copies profile ${from}"
+  do_integrate
+  do_push
+  do_apply
+  echo "${own} now has its own copy of profile '${from}' in machines/${own}/; edit it freely."
+}
+
 usage() {
-  echo "Usage: claude-sync.sh [push|pull|sync|bootstrap|doctor [remediate]|override add|remove|list [JQ_PATH]]" >&2
+  echo "Usage: claude-sync.sh [push|pull|sync|bootstrap|doctor [remediate]|override add|remove|list [JQ_PATH]" >&2
+  echo "                       |profile list|show NAME|copy FROM [--force] [--yes]|use NAME]" >&2
   echo "  e.g. claude-sync.sh override add '.enabledPlugins[\"name@marketplace\"]'" >&2
+  echo "       claude-sync.sh profile use other-host   # follow machines/other-host/ (agents, hooks, skills, CLAUDE.md)" >&2
   exit 1
 }
 
@@ -377,8 +558,11 @@ main() {
   # itself on a feature branch (e.g. via SessionStart/SessionEnd hooks
   # firing mid-session). Skip rather than pollute that branch.
   case "${cmd}" in
-    push|sync|bootstrap|override)
-      if ! on_default_branch; then
+    push|sync|bootstrap|override|profile)
+      # profile list/show only read, so they work on any branch.
+      if [ "${cmd}" = "profile" ] && { [ "${2:-list}" = "list" ] || [ "${2:-}" = "show" ]; }; then
+        :
+      elif ! on_default_branch; then
         echo "claude-config is on branch '$(git -C "${REPO_DIR}" rev-parse --abbrev-ref HEAD 2>/dev/null)', not its default branch '$(default_branch)' - skipping sync to avoid committing local config onto a feature branch. Switch back to the default branch to sync." >&2
         exit 0
       fi
@@ -409,6 +593,9 @@ main() {
       ;;
     override)
       do_override "${2:-list}" "${3:-}"
+      ;;
+    profile)
+      do_profile "${@:2}"
       ;;
     doctor)
       if [ "${2:-}" = "remediate" ]; then

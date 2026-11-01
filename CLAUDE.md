@@ -1,0 +1,28 @@
+# Working in this repo
+
+This repo syncs Claude Code's global config (`CLAUDE.md`, `settings.json`, agents, hooks, skills, memory) between machines. It is AI safe: guidance files for Claude are welcome here. Keep this file short; read the linked docs when a task needs them.
+
+## How it works
+
+- `claude-sync.sh sync` = capture local files into the repo and commit, rebase onto upstream, push, then apply the repo back to the machine. Copy-based, never symlinks. Apply mirrors with `rsync --delete`.
+- Shared files live in `dot-claude/` and `dot-agents/skills/`. Per-machine differences live only under `machines/`:
+  - `machines/<hostname>.conf` (project path, optional `PROFILE=`)
+  - `machines/<hostname>.settings.json` (settings override)
+  - `machines/<profile>/` (agents, hooks, skills, `CLAUDE.append.md`, `NOTES.md`), see `lib/profile.sh`
+- `lib/` holds the logic, `tests/` the bats tests, `publish-public.sh` the public mirror export.
+
+## Rules
+
+- Open a PR. Never push to the default branch. `claude-sync.sh` skips syncing while this clone is on a feature branch, which is expected.
+- Do not edit `memory/` or `machines/` by hand unless the task is about them. Sync rewrites them.
+- Code, tests and docs outside `machines/`, `memory/` and `private/` must stay generic: placeholder hostnames (`host-a`, `host-b`), no personal paths, names or servers. They are published to the public template.
+- Shell scripts: `shellcheck install.sh claude-sync.sh npm-tools.sh gh-tools.sh lib/*.sh` must pass.
+- Run `bats tests` before opening a PR. Tests use a fake HOME through the `CLAUDE_SYNC_*` environment variables. Never run `claude-sync.sh` or `install.sh` against the real HOME while testing.
+- Check `git status`, the branch and `origin` before starting.
+
+## Read first
+
+- `docs/risks.md`: what can go wrong (data loss, leaks, deadlocks) and the guard and test for each. Read before touching capture, apply, profiles or the publish script.
+- `docs/runbook.md`: restoring a machine, cloning a profile, recovering a stuck sync, publishing by hand.
+- `docs/superpowers/specs/2026-07-25-claude-config-sync-design.md`: the design.
+- If they exist (private repo only): `private/` for repo-wide private notes, and `machines/<profile>/NOTES.md` for the profile you are working on. These never reach the public mirror.

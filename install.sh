@@ -1,6 +1,35 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# install.sh [--repair|--reinstall] [--profile NAME]
+# --profile (or CLAUDE_SYNC_PROFILE) makes this machine follow the machine
+# profile machines/NAME/ instead of its own; it's written as PROFILE=NAME
+# into machines/<hostname>.conf when that file is created.
+REPAIR="false"
+PROFILE_NAME="${CLAUDE_SYNC_PROFILE:-}"
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --repair|--reinstall) REPAIR="true" ;;
+    --profile)
+      [ "$#" -ge 2 ] || { echo "--profile needs a profile name." >&2; exit 1; }
+      PROFILE_NAME="$2"
+      shift
+      ;;
+    --profile=*) PROFILE_NAME="${1#--profile=}" ;;
+    *)
+      echo "Unknown option: $1" >&2
+      echo "Usage: install.sh [--repair|--reinstall] [--profile NAME]" >&2
+      exit 1
+      ;;
+  esac
+  shift
+done
+if [ -n "${PROFILE_NAME}" ] && { ! [[ "${PROFILE_NAME}" =~ ^[A-Za-z0-9._-]+$ ]] \
+    || [ "${PROFILE_NAME}" = "." ] || [ "${PROFILE_NAME}" = ".." ]; }; then
+  echo "Not a valid profile name: ${PROFILE_NAME}" >&2
+  exit 1
+fi
+
 if [ -n "${CLAUDE_SYNC_REPO_URL:-}" ]; then
   REPO_URL="${CLAUDE_SYNC_REPO_URL}"
 elif [ -t 0 ]; then
@@ -28,48 +57,49 @@ AGENTS_HOME="${CLAUDE_SYNC_AGENTS_HOME:-${HOME}/.agents}"
 # real Claude Code config content (~/.claude/CLAUDE.md, settings.json,
 # ~/.claude/agents/, ~/.claude/hooks/, ~/.agents/skills/, memory) — repair
 # resets the TOOL's state, not your actual config, which then gets adopted
-# fresh via the normal bootstrap flow below.
-case "${1:-}" in
-  --repair|--reinstall)
-    echo "Repairing: resetting local sync state for ${HOSTNAME_VAL}..."
+# fresh via the normal bootstrap flow below. Machine profiles
+# (machines/<profile>/) and settings overrides (machines/<name>.settings.json)
+# are shared repo content, not bookkeeping, so they're kept; only the .conf
+# goes, so a PROFILE= line in it must be given again with --profile.
+if [ "${REPAIR}" = "true" ]; then
+  echo "Repairing: resetting local sync state for ${HOSTNAME_VAL}..."
 
-    # rm -rf "${REPO_DIR}" below would otherwise pull the rug out from under
-    # a shell whose cwd is inside it (the natural place to be when invoking
-    # ~/claude-config/install.sh), breaking getcwd() for every command after.
-    cd "${HOME}" 2>/dev/null || cd /
+  # rm -rf "${REPO_DIR}" below would otherwise pull the rug out from under
+  # a shell whose cwd is inside it (the natural place to be when invoking
+  # ~/claude-config/install.sh), breaking getcwd() for every command after.
+  cd "${HOME}" 2>/dev/null || cd /
 
-    if [ -d "${REPO_DIR}/.git" ]; then
-      if [ -n "$(git -C "${REPO_DIR}" status --porcelain 2>/dev/null)" ]; then
-        echo "Refusing to repair: ${REPO_DIR} has uncommitted or untracked changes. Commit, stash, or discard them first." >&2
-        exit 1
-      fi
-      if git -C "${REPO_DIR}" rev-parse --abbrev-ref --symbolic-full-name '@{u}' >/dev/null 2>&1 \
-        && [ -n "$(git -C "${REPO_DIR}" log '@{u}..HEAD' --oneline 2>/dev/null)" ]; then
-        echo "Refusing to repair: ${REPO_DIR} has unpushed commits. Push or discard them first." >&2
-        exit 1
-      fi
+  if [ -d "${REPO_DIR}/.git" ]; then
+    if [ -n "$(git -C "${REPO_DIR}" status --porcelain 2>/dev/null)" ]; then
+      echo "Refusing to repair: ${REPO_DIR} has uncommitted or untracked changes. Commit, stash, or discard them first." >&2
+      exit 1
     fi
-
-    rm -rf "${REPO_DIR}"
-    git clone "${REPO_URL}" "${REPO_DIR}"
-
-    HOST_CONF_PATH="machines/${HOSTNAME_VAL}.conf"
-    if [ -f "${REPO_DIR}/${HOST_CONF_PATH}" ]; then
-      git -C "${REPO_DIR}" rm -q "${HOST_CONF_PATH}"
-      git -C "${REPO_DIR}" commit -q -m "repair: reset ${HOSTNAME_VAL}'s machine config"
-      git -C "${REPO_DIR}" push
+    if git -C "${REPO_DIR}" rev-parse --abbrev-ref --symbolic-full-name '@{u}' >/dev/null 2>&1 \
+      && [ -n "$(git -C "${REPO_DIR}" log '@{u}..HEAD' --oneline 2>/dev/null)" ]; then
+      echo "Refusing to repair: ${REPO_DIR} has unpushed commits. Push or discard them first." >&2
+      exit 1
     fi
+  fi
 
-    if [ -d "${CLAUDE_HOME}/skills" ]; then
-      for link in "${CLAUDE_HOME}"/skills/*; do
-        [ -L "${link}" ] || continue
-        case "$(readlink "${link}")" in
-          "${AGENTS_HOME}"/skills/*) rm -f "${link}" ;;
-        esac
-      done
-    fi
-    ;;
-esac
+  rm -rf "${REPO_DIR}"
+  git clone "${REPO_URL}" "${REPO_DIR}"
+
+  HOST_CONF_PATH="machines/${HOSTNAME_VAL}.conf"
+  if [ -f "${REPO_DIR}/${HOST_CONF_PATH}" ]; then
+    git -C "${REPO_DIR}" rm -q "${HOST_CONF_PATH}"
+    git -C "${REPO_DIR}" commit -q -m "repair: reset ${HOSTNAME_VAL}'s machine config"
+    git -C "${REPO_DIR}" push
+  fi
+
+  if [ -d "${CLAUDE_HOME}/skills" ]; then
+    for link in "${CLAUDE_HOME}"/skills/*; do
+      [ -L "${link}" ] || continue
+      case "$(readlink "${link}")" in
+        "${AGENTS_HOME}"/skills/*) rm -f "${link}" ;;
+      esac
+    done
+  fi
+fi
 
 if [ ! -d "${REPO_DIR}/.git" ]; then
   git clone "${REPO_URL}" "${REPO_DIR}"
@@ -96,6 +126,14 @@ CONF_FILE="${REPO_DIR}/machines/${HOSTNAME_VAL}.conf"
 CONF_ALREADY_EXISTED="false"
 [ -f "${CONF_FILE}" ] && CONF_ALREADY_EXISTED="true"
 
+if [ -n "${PROFILE_NAME}" ] && [ "${CONF_ALREADY_EXISTED}" = "true" ]; then
+  echo "machines/${HOSTNAME_VAL}.conf already exists, so --profile is ignored. Use: claude-sync.sh profile use ${PROFILE_NAME}" >&2
+elif [ -n "${PROFILE_NAME}" ] && [ "${PROFILE_NAME}" != "${HOSTNAME_VAL}" ] \
+    && [ ! -d "${REPO_DIR}/machines/${PROFILE_NAME}" ]; then
+  echo "No profile called '${PROFILE_NAME}': machines/${PROFILE_NAME}/ does not exist in the repo." >&2
+  exit 1
+fi
+
 if [ ! -f "${CONF_FILE}" ]; then
   DEFAULT_PROJECT_PATH="${HOME}/project"
   if [ -n "${CLAUDE_SYNC_PROJECT_PATH:-}" ]; then
@@ -106,6 +144,9 @@ if [ ! -f "${CONF_FILE}" ]; then
   fi
   mkdir -p "${REPO_DIR}/machines"
   printf 'PRIMARY_PROJECT_PATH=%s\n' "${project_path}" > "${CONF_FILE}"
+  if [ -n "${PROFILE_NAME}" ] && [ "${PROFILE_NAME}" != "${HOSTNAME_VAL}" ]; then
+    printf 'PROFILE=%s\n' "${PROFILE_NAME}" >> "${CONF_FILE}"
+  fi
 fi
 
 if [ "${CONF_ALREADY_EXISTED}" = "true" ]; then

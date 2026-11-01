@@ -21,3 +21,23 @@ setup() {
   run read_primary_project_path "${BATS_TEST_TMPDIR}/does-not-exist.conf"
   [ "$status" -eq 1 ]
 }
+
+@test "read_machine_profile fails when there is no PROFILE line" {
+  conf_file="${BATS_TEST_TMPDIR}/my-host.conf"
+  write_machine_conf "${conf_file}" "/home/user/project"
+  run read_machine_profile "${conf_file}"
+  [ "$status" -eq 1 ]
+}
+
+@test "write_machine_profile sets, replaces and removes PROFILE without touching the project path" {
+  conf_file="${BATS_TEST_TMPDIR}/my-host.conf"
+  write_machine_conf "${conf_file}" "/home/user/project"
+  write_machine_profile "${conf_file}" "host-a"
+  [ "$(read_machine_profile "${conf_file}")" = "host-a" ]
+  write_machine_profile "${conf_file}" "host-b"
+  [ "$(read_machine_profile "${conf_file}")" = "host-b" ]
+  [ "$(grep -c '^PROFILE=' "${conf_file}")" -eq 1 ]
+  write_machine_profile "${conf_file}" ""
+  refute grep -q '^PROFILE=' "${conf_file}"
+  [ "$(read_primary_project_path "${conf_file}")" = "/home/user/project" ]
+}
