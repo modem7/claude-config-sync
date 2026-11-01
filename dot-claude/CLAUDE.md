@@ -15,6 +15,7 @@ Do this as the first step of the task, not after implementing something. If the 
 ## Token usage (recommended)
 
 Match effort to task complexity and keep tool output lean — see global memory `feedback_token_optimisation.md` for the full list.
+Delegate broad repo searches and full test runs to the Haiku subagents (`search`, `audit`); do small lookups directly.
 
 ## Scripts are written by Opus
 
