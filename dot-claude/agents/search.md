@@ -1,6 +1,6 @@
 ---
 name: search
-description: Use proactively for broad repo questions that would take more than a few file reads: how it is organised, where X lives, every call site or usage of a symbol. Returns paths and file:line lists only.
+description: Use proactively for broad repo questions that would take more than a few file reads, such as how it is organised, where X lives, or every call site or usage of a symbol. Returns paths and file:line lists only.
 model: haiku
 tools: Read, Grep, Glob
 effort: low
