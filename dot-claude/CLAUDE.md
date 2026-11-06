@@ -29,10 +29,14 @@ Delegate broad repo searches and full test runs to the Haiku subagents (`search`
 
 Use these instead of doing the work inline when the job matches. Each runs on the cheapest model that does it well.
 
+- `search` (Haiku): broad repo lookups, returns paths and `file:line` only.
+- `audit` (Haiku): check a diff and run tests before a commit or PR.
+- `script-writer` (Opus): new scripts, rewrites and hook scripts.
 - `pr-shepherd` (Haiku): branch to open PR, then CI state.
 - `ci-debugger` (Sonnet): root cause of a failed pipeline. Read-only.
 - `renovate-triage` (Sonnet): sort Renovate PRs into safe or needs a look.
 - `shell-reviewer` (Sonnet): review bash and hook scripts. Review only.
+- `docs-sync` (Sonnet): after a change, check every README, instructions file and doc in the repo agrees. Works on any repo. Run before opening a PR.
 - `config-sync-checker` (Haiku): run before `claude-sync.sh pull` or `sync`.
 - `research` (Sonnet): sourced web and GET-only API lookups.
 

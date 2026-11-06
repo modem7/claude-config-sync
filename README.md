@@ -124,6 +124,11 @@ any session/task/security state — see
 `docs/superpowers/specs/2026-07-25-claude-config-sync-design.md` for the
 full list and rationale.
 
+**Agents:** the subagents in `dot-claude/agents/`, what each is for, which
+model it runs on and the rules they follow are in `docs/agents.md`. Agents
+tied to one machine live in `machines/<profile>/agents/` and are never
+published.
+
 ## Per-machine overrides
 
 `dot-claude/settings.json` is shared by every machine. To keep a setting on
@@ -244,11 +249,13 @@ that does the job. Haiku for mechanical checks: `search` (repo lookups),
 `audit` (diff review and test runs) and `pr-shepherd` (branch to PR, then CI
 state), and `config-sync-checker` (flags files a mirror apply would delete).
 Sonnet where judgement is needed: `ci-debugger`, `renovate-triage`,
-`shell-reviewer` and `research` (sourced web and GET-only API lookups). Opus for
+`shell-reviewer`, `docs-sync` (checks a repo's docs agree with each other and
+the code) and `research` (sourced web and GET-only API lookups). Opus for
 `script-writer`. They are read-only unless stated. `ci-debugger` and
 `pr-shepherd` read `WOODPECKER_SERVER` and `WOODPECKER_TOKEN` from your
 environment. Anything tied to your own setup belongs in a machine profile
-under `machines/<profile>/agents/`, which is never published.
+under `machines/<profile>/agents/`, which is never published. See
+`docs/agents.md` for the full reference.
 
 For a broader look at what's out there beyond my picks, browse
 [claudedirectory.org](https://www.claudedirectory.org) and the official
