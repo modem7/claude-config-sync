@@ -23,7 +23,7 @@ Rules, all of them firm:
 - Merge commits, not squash, when asked to merge.
 
 After the PR is open:
-1. Read CI. GitHub: `gh pr checks --repo OWNER/REPO PR`. Woodpecker: `source ~/.config/woodpecker-cli/env && woodpecker-cli pipeline ls OWNER/REPO`.
+1. Read CI. GitHub: `gh pr checks --repo OWNER/REPO PR`. Woodpecker: with `WOODPECKER_SERVER` and `WOODPECKER_TOKEN` set from your own env file, `woodpecker-cli pipeline ls OWNER/REPO`.
 2. Do not poll in a loop. Report the state once. If a check failed, give the failing step name and the last 20 lines of its log.
 
 Report: PR URL, branch, CI state, and any failing step. Under 150 words.

@@ -25,6 +25,19 @@ After a PR merges, remove its worktree and local branch (`git worktree remove`, 
 Match effort to task complexity and keep tool output lean — see global memory `feedback_token_optimisation.md` for the full list.
 Delegate broad repo searches and full test runs to the Haiku subagents (`search`, `audit`); do small lookups directly.
 
+## Agents for common jobs
+
+Use these instead of doing the work inline when the job matches. Each runs on the cheapest model that does it well.
+
+- `pr-shepherd` (Haiku): branch to open PR, then CI state.
+- `ci-debugger` (Sonnet): root cause of a failed pipeline. Read-only.
+- `renovate-triage` (Sonnet): sort Renovate PRs into safe or needs a look.
+- `shell-reviewer` (Sonnet): review bash and hook scripts. Review only.
+- `config-sync-checker` (Haiku): run before `claude-sync.sh pull` or `sync`.
+- `research` (Sonnet): sourced web and GET-only API lookups.
+
+Machine-specific agents live in the machine profile and are not listed here.
+
 ## Scripts are written by Opus
 
 The default model is Sonnet. When a task needs a new script, a full rewrite, or a non-trivial change to a script (bash, Python, PowerShell, hook scripts), hand that part to the `script-writer` agent, which runs on Opus. Give it the real files and the goal. Then check what it wrote. Do not write scripts yourself on Sonnet. Single-line edits and config files stay with the main session.

@@ -16,6 +16,7 @@ This repo syncs Claude Code's global config (`CLAUDE.md`, `settings.json`, agent
 - Open a PR. Never push to the default branch. `claude-sync.sh` skips syncing while this clone is on a feature branch, which is expected.
 - Do not edit `memory/` or `machines/` by hand unless the task is about them. Sync rewrites them.
 - Code, tests and docs outside `machines/`, `memory/` and `private/` must stay generic: placeholder hostnames (`host-a`, `host-b`), no personal paths, names or servers. They are published to the public template.
+- Agents in `dot-claude/agents/` are published, so they must be generic: no personal hosts, URLs, repos or paths. An agent tied to one setup goes in `machines/<profile>/agents/`. A profile agent with the same name replaces the shared one on that machine, so keep the two in step when you change either.
 - Shell scripts: `shellcheck install.sh claude-sync.sh npm-tools.sh gh-tools.sh lib/*.sh` must pass.
 - Run `bats tests` before opening a PR. Tests use a fake HOME through the `CLAUDE_SYNC_*` environment variables. Never run `claude-sync.sh` or `install.sh` against the real HOME while testing.
 - Check `git status`, the branch and `origin` before starting.

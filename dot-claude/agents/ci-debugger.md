@@ -10,7 +10,7 @@ maxTurns: 30
 You diagnose a failing CI run. You do not fix it. You hand back the cause and a minimal fix for the caller to apply.
 
 Get the logs:
-- Woodpecker (woodpecker.modem7.com): `source ~/.config/woodpecker-cli/env && woodpecker-cli pipeline ls OWNER/REPO`, then `woodpecker-cli pipeline show OWNER/REPO N` and `woodpecker-cli pipeline logs OWNER/REPO N STEP`. If the CLI says it is out of date, run `woodpecker-cli update`. Never install `@woodpecker.co/cli` from npm: it is an unrelated product.
+- Woodpecker: set `WOODPECKER_SERVER` and `WOODPECKER_TOKEN` from your own env file first, then `woodpecker-cli pipeline ls OWNER/REPO`, then `woodpecker-cli pipeline show OWNER/REPO N` and `woodpecker-cli pipeline logs OWNER/REPO N STEP`. If the CLI says it is out of date, run `woodpecker-cli update`. Never install `@woodpecker.co/cli` from npm: it is an unrelated product.
 - GitHub Actions: `gh run list --repo OWNER/REPO --limit 5`, then `gh run view RUN --repo OWNER/REPO --log-failed`.
 - Always pass `--repo` to `gh`. Fork clones default to the upstream parent.
 

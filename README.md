@@ -239,6 +239,17 @@ Skills in `dot-agents/skills/` (`find-skills`,
 `usage-audit`) — a few example personal skills as a starting point; prune or
 replace with your own.
 
+Agents in `dot-claude/agents/` — example subagents, each on the cheapest model
+that does the job. Haiku for mechanical checks: `search` (repo lookups),
+`audit` (diff review and test runs) and `pr-shepherd` (branch to PR, then CI
+state), and `config-sync-checker` (flags files a mirror apply would delete).
+Sonnet where judgement is needed: `ci-debugger`, `renovate-triage`,
+`shell-reviewer` and `research` (sourced web and GET-only API lookups). Opus for
+`script-writer`. They are read-only unless stated. `ci-debugger` and
+`pr-shepherd` read `WOODPECKER_SERVER` and `WOODPECKER_TOKEN` from your
+environment. Anything tied to your own setup belongs in a machine profile
+under `machines/<profile>/agents/`, which is never published.
+
 For a broader look at what's out there beyond my picks, browse
 [claudedirectory.org](https://www.claudedirectory.org) and the official
 Claude Code plugin/skill listings.
