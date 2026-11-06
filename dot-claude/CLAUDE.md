@@ -12,6 +12,14 @@ Before exploring code or writing any implementation in a git repository, check:
 
 Do this as the first step of the task, not after implementing something. If the checked-out branch is stale or unrelated to the task at hand, switch to a fresh branch off an up-to-date default branch immediately — before writing any code — rather than discovering the problem at commit/push time and having to rework.
 
+## Scratch files and cleanup
+
+Put temporary files (commit messages, PR bodies, intermediate output, test scripts) in the session scratchpad directory, never in the project folder or the repo. If the system prompt gives no scratchpad, use a new `mktemp -d` directory. Use the Write tool and pass the path with `git commit -F` or `gh pr create --body-file`.
+
+Delete safe temporary files you created before ending the task. Do not work around a hook that blocks a delete: leave the file and tell the user its full path.
+
+After a PR merges, remove its worktree and local branch (`git worktree remove`, `git branch -d`) and check that the remote branch is gone. Do not delete other branches unless you have checked they are merged and the user agrees. A dedicated cleanup agent is not needed for this.
+
 ## Token usage (recommended)
 
 Match effort to task complexity and keep tool output lean — see global memory `feedback_token_optimisation.md` for the full list.
