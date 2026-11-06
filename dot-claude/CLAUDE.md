@@ -42,6 +42,8 @@ Use these instead of doing the work inline when the job matches. Each runs on th
 
 Machine-specific agents live in the machine profile and are not listed here.
 
+Planning stays in the main session, because it needs the whole conversation and a subagent would start cold. For a plan that needs repo exploration, send the lookups to `search` (Haiku), then write the plan yourself with the planning skills. There is no planning agent.
+
 ## Scripts are written by Opus
 
 The default model is Sonnet. When a task needs a new script, a full rewrite, or a non-trivial change to a script (bash, Python, PowerShell, hook scripts), hand that part to the `script-writer` agent, which runs on Opus. Give it the real files and the goal. Then check what it wrote. Do not write scripts yourself on Sonnet. Single-line edits and config files stay with the main session.
