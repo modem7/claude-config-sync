@@ -1,21 +1,11 @@
 {
   "$schema": "https://json.schemastore.org/claude-code-settings.json",
-  "model": "sonnet",
-  "advisorModel": "opus",
   "env": {
     "ENABLE_STOP_REVIEW": "0",
     "SECURITY_REVIEW_MODEL": "claude-sonnet-5-5",
     "SG_AGENTIC_MODEL": "claude-sonnet-5-5",
     "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "300000"
   },
-  "deniedMcpServers": [
-    {
-      "serverName": "github"
-    },
-    {
-      "serverName": "context7"
-    }
-  ],
   "permissions": {
     "allow": [
       "Bash(*)",
@@ -34,6 +24,12 @@
       "Bash(gh pr merge *)"
     ]
   },
+  "model": "sonnet",
+  "deniedMcpServers": [
+    {
+      "serverName": "github"
+    }
+  ],
   "hooks": {
     "PreToolUse": [
       {
@@ -184,7 +180,8 @@
     "deployment-engineer@awesome-claude-code-plugins": false,
     "crowdsec@crowdsecurity": false,
     "andrej-karpathy-skills@karpathy-skills": false,
-    "i-have-adhd@i-have-adhd": false
+    "i-have-adhd@i-have-adhd": false,
+    "claude-code-wakatime@wakatime": true
   },
   "extraKnownMarketplaces": {
     "superpowers-marketplace": {
@@ -216,8 +213,15 @@
         "source": "github",
         "repo": "ayghri/i-have-adhd"
       }
+    },
+    "wakatime": {
+      "source": {
+        "source": "git",
+        "url": "https://github.com/wakatime/claude-code-wakatime.git"
+      }
     }
   },
+  "advisorModel": "opus",
   "theme": "dark",
   "remoteControlAtStartup": true,
   "inputNeededNotifEnabled": true,
