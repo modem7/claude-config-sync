@@ -185,6 +185,14 @@ config files via write-temp-then-rename, which would silently replace a
 symlink with a plain file and break the link without warning. Copying is
 explicit and robust to that.
 
+> **Superseded (2026-11):** steps 2-4 no longer commit or push to the
+> default branch. Commits go onto `sync/<hostname>` (one commit on top of
+> the default branch), which is rebuilt on origin's default branch,
+> applied, force-pushed with a lease and opened as a PR with `gh`; a human
+> merges it. `install.sh --repair` also goes through that PR. See "How
+> changes reach other machines" in the README and rows 9 and 13-19 of
+> `docs/risks.md`.
+
 `claude-sync.sh` supports `push`, `pull`, and `sync` (default, does both in
 a safe order):
 

@@ -8,6 +8,7 @@
 ## Pull Requests
 
 - Fork the repo and create your branch from `master`.
+- Develop in a separate `git worktree` cut from `origin/master`, not in the live clone: while a sync PR is pending, the live clone's working tree carries that pending state.
 - Keep PRs focused — one change per PR.
 - Ensure your changes don't break existing functionality.
 - Update documentation if needed.

@@ -2,6 +2,7 @@
 
 setup() {
   load 'test_helper'
+  install_fake_gh
 
   ORIGIN="${BATS_TEST_TMPDIR}/origin.git"
   git init --bare -q "${ORIGIN}"
@@ -56,7 +57,29 @@ run_as_machine_a() {
   git -C "${REPO_A}" -c user.email=test@test -c user.name=test "$@" 2>/dev/null || true
 }
 
-@test "push captures local config, commits, and pushes to origin" {
+raw_as() {  # raw_as a|b CMD [ARGS...]: runs claude-sync.sh as that machine
+  local m="$1"; shift
+  local home agents repo
+  if [ "$m" = a ]; then home="${CLAUDE_HOME_A}" agents="${AGENTS_HOME_A}" repo="${REPO_A}"
+  else home="${CLAUDE_HOME_B}" agents="${AGENTS_HOME_B}" repo="${REPO_B}"; fi
+  CLAUDE_SYNC_CLAUDE_HOME="${home}" CLAUDE_SYNC_AGENTS_HOME="${agents}" CLAUDE_SYNC_HOSTNAME="host-${m}" \
+  GIT_AUTHOR_NAME=test GIT_AUTHOR_EMAIL=test@test GIT_COMMITTER_NAME=test GIT_COMMITTER_EMAIL=test@test \
+    "${repo}/claude-sync.sh" "$@"
+}
+
+# Like raw_as, but once a repo-changing command succeeds its sync PR is
+# merged and the machine syncs again, as if the change was shared at once.
+sync_as() {  # sync_as a|b CMD [ARGS...]
+  local m="$1" rc=0
+  shift
+  raw_as "$m" "$@" || rc=$?
+  [ "${rc}" -eq 0 ] || return "${rc}"
+  case "${1:-}" in
+    push|sync|bootstrap|override|profile) merge_and_converge "${ORIGIN}" "host-${m}" raw_as "$m" ;;
+  esac
+}
+
+@test "push captures local config onto the machine's sync branch and opens a PR, never touching master" {
   CLAUDE_SYNC_CLAUDE_HOME="${CLAUDE_HOME_A}" \
   CLAUDE_SYNC_AGENTS_HOME="${AGENTS_HOME_A}" \
   CLAUDE_SYNC_HOSTNAME="host-a" \
@@ -65,10 +88,12 @@ run_as_machine_a() {
 
   [ "$(cat "${REPO_A}/dot-claude/CLAUDE.md")" = "# from machine A" ]
 
-  CHECK="${BATS_TEST_TMPDIR}/check"
-  git clone -q "${ORIGIN}" "${CHECK}"
-  [ "$(cat "${CHECK}/dot-claude/CLAUDE.md")" = "# from machine A" ]
-  [ "$(cat "${CHECK}/memory/MEMORY.md")" = "machine A memory" ]
+  # It went to machine A's sync branch and a PR, never to master.
+  [ "$(git -C "${ORIGIN}" show sync/host-a:dot-claude/CLAUDE.md)" = "# from machine A" ]
+  [ "$(git -C "${ORIGIN}" show sync/host-a:memory/MEMORY.md)" = "machine A memory" ]
+  refute git -C "${ORIGIN}" cat-file -e master:dot-claude/CLAUDE.md
+  grep -q "^gh pr create --repo test/repo --base master --head sync/host-a " "${FAKE_GH_LOG}"
+  [ "$(git -C "${REPO_A}" rev-parse --abbrev-ref HEAD)" = "master" ]
 }
 
 @test "push/sync/bootstrap skip without committing when the repo clone is on a feature branch" {
@@ -82,6 +107,7 @@ run_as_machine_a() {
     "${REPO_A}/claude-sync.sh" sync
 
   [ "$status" -eq 0 ]
+  [[ "$output" == *"sync SKIPPED"* ]]
   [[ "$output" == *"not its default branch"* ]]
   # Nothing got captured/committed onto the feature branch - the seed
   # commit is still HEAD.
@@ -95,6 +121,7 @@ run_as_machine_a() {
   CLAUDE_SYNC_HOSTNAME="host-a" \
   GIT_AUTHOR_NAME=test GIT_AUTHOR_EMAIL=test@test GIT_COMMITTER_NAME=test GIT_COMMITTER_EMAIL=test@test \
     "${REPO_A}/claude-sync.sh" push
+  merge_sync_pr "${ORIGIN}" host-a
 
   git clone -q "${ORIGIN}" "${REPO_B}"
   source "${LIB_DIR}/machine-conf.sh"
@@ -116,7 +143,7 @@ run_as_machine_a() {
   [ "$status" -eq 1 ]
 }
 
-@test "push succeeds on the very first push of a brand-new branch with no upstream" {
+@test "push refuses loudly against an empty origin, since there is no default branch to open a PR against" {
   EMPTY_ORIGIN="${BATS_TEST_TMPDIR}/empty_origin.git"
   git init --bare -q "${EMPTY_ORIGIN}"
 
@@ -147,9 +174,11 @@ run_as_machine_a() {
       CLAUDE_SYNC_HOSTNAME="host-first" \
       GIT_AUTHOR_NAME=test GIT_AUTHOR_EMAIL=test@test GIT_COMMITTER_NAME=test GIT_COMMITTER_EMAIL=test@test \
       "${FIRST_REPO}/claude-sync.sh" push
-  [ "$status" -eq 0 ]
-
-  git -C "${FIRST_REPO}" rev-parse --abbrev-ref --symbolic-full-name '@{u}'
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"default branch"* ]]
+  [[ "$output" == *"push an initial commit"* ]]
+  # Nothing at all was pushed.
+  [ -z "$(git -C "${EMPTY_ORIGIN}" for-each-ref)" ]
 }
 
 @test "install.sh clones, creates machine conf, and seeds the repo on a fresh machine" {
@@ -235,6 +264,7 @@ EOF
   git -C "${BROKEN_REPO_DIR}" -c user.email=test@test -c user.name=test add -A
   git -C "${BROKEN_REPO_DIR}" -c user.email=test@test -c user.name=test commit -q -m "seed broken conf"
   git -C "${BROKEN_REPO_DIR}" push -q origin master
+  local master_before; master_before="$(git -C "${ORIGIN}" rev-parse master)"
 
   # And a stale skill-discovery symlink this tool created on a prior run.
   mkdir -p "${BROKEN_AGENTS_HOME}/skills/stale-skill" "${BROKEN_CLAUDE_HOME}/skills"
@@ -263,9 +293,9 @@ EOF
 
   # Remote: a fresh clone confirms the correction actually made it to
   # origin, not just the local working copy.
-  CHECK_REPO="${BATS_TEST_TMPDIR}/repair_check"
-  git clone -q "${ORIGIN}" "${CHECK_REPO}"
-  grep -q "PRIMARY_PROJECT_PATH=/correct/path" "${CHECK_REPO}/machines/host-broken.conf"
+  git -C "${ORIGIN}" show sync/host-broken:machines/host-broken.conf | grep -q "PRIMARY_PROJECT_PATH=/correct/path"
+  # Through the PR only: repair never pushes to the default branch.
+  [ "$(git -C "${ORIGIN}" rev-parse master)" = "${master_before}" ]
 
   # The stale symlink from the prior, broken run is gone.
   [ ! -e "${BROKEN_CLAUDE_HOME}/skills/stale-skill" ]
@@ -319,7 +349,8 @@ EOF
     "${REPO_ROOT}/install.sh" --repair
 
   [ "$status" -eq 1 ]
-  [[ "$output" == *"uncommitted or untracked changes"* ]]
+  [[ "$output" == *"pending sync PR"* ]]
+  [[ "$output" == *"Do not use git stash or git reset --hard"* ]]
   # The dirty clone must survive untouched — repair refused, not repaired.
   [ -d "${DIRTY_REPO_DIR}/.git" ]
 }
@@ -364,6 +395,7 @@ EOF
   CLAUDE_SYNC_HOSTNAME="host-a" \
   GIT_AUTHOR_NAME=test GIT_AUTHOR_EMAIL=test@test GIT_COMMITTER_NAME=test GIT_COMMITTER_EMAIL=test@test \
     "${REPO_A}/claude-sync.sh" push
+  merge_sync_pr "${ORIGIN}" host-a
 
   [ "$(cat "${REPO_A}/dot-agents/skills/shared-skill/SKILL.md")" = "shared skill from A" ]
 
@@ -391,18 +423,12 @@ EOF
 
   # After bootstrap pushes, a fresh clone of origin shows machine B's
   # local-only skill was captured and shared too, not just preserved locally.
-  CHECK="${BATS_TEST_TMPDIR}/check_bootstrap"
-  git clone -q "${ORIGIN}" "${CHECK}"
-  [ "$(cat "${CHECK}/dot-agents/skills/local-only-b/SKILL.md")" = "local only skill from B" ]
-  [ "$(cat "${CHECK}/dot-agents/skills/shared-skill/SKILL.md")" = "shared skill from A" ]
+  [ "$(git -C "${ORIGIN}" show sync/host-b:dot-agents/skills/local-only-b/SKILL.md)" = "local only skill from B" ]
+  [ "$(git -C "${ORIGIN}" show sync/host-b:dot-agents/skills/shared-skill/SKILL.md)" = "shared skill from A" ]
 }
 
 sync_as_machine_a() {
-  CLAUDE_SYNC_CLAUDE_HOME="${CLAUDE_HOME_A}" \
-  CLAUDE_SYNC_AGENTS_HOME="${AGENTS_HOME_A}" \
-  CLAUDE_SYNC_HOSTNAME="host-a" \
-  GIT_AUTHOR_NAME=test GIT_AUTHOR_EMAIL=test@test GIT_COMMITTER_NAME=test GIT_COMMITTER_EMAIL=test@test \
-    "${REPO_A}/claude-sync.sh" "$@"
+  sync_as a "$@"
 }
 
 doctor_as_machine_a() {
@@ -467,37 +493,64 @@ doctor_as_machine_a() {
   [ ! -d "${REPO_A}/.git/rebase-merge" ]
 }
 
-@test "doctor remediate refuses to silently discard a genuine content conflict" {
-  # Baseline: machine A pushes settings.json with theme=dark.
-  sync_as_machine_a sync
-  [ "$(cat "${CLAUDE_HOME_A}/settings.json")" = '{"theme":"dark"}' ]
-
-  # Simulate a PR merged straight to origin (bypassing claude-sync), changing
-  # the same "theme" key - exactly what happened repeatedly this session.
+remote_theme_light() {  # a PR merged on origin changes the same key
   REMOTE_EDIT="${BATS_TEST_TMPDIR}/remote_edit"
   git clone -q "${ORIGIN}" "${REMOTE_EDIT}"
   echo '{"theme":"light"}' > "${REMOTE_EDIT}/dot-claude/settings.json"
   git -C "${REMOTE_EDIT}" -c user.email=test@test -c user.name=test commit -q -am "remote theme change"
   git -C "${REMOTE_EDIT}" push -q origin master
+}
 
-  # Machine A independently edits the same key differently, then syncs -
-  # do_capture_and_commit commits it locally, do_integrate's rebase hits a
-  # real conflict against the remote change above and aborts.
+@test "a real conflict with a merged change fails loudly and changes nothing" {
+  sync_as_machine_a sync
+  [ "$(cat "${CLAUDE_HOME_A}/settings.json")" = '{"theme":"dark"}' ]
+  remote_theme_light
+  local master_before; master_before="$(git -C "${ORIGIN}" rev-parse master)"
+
   echo '{"theme":"custom"}' > "${CLAUDE_HOME_A}/settings.json"
   run sync_as_machine_a sync
   [ "$status" -ne 0 ]
+  [[ "$output" == *"real conflict"* ]]
+  [[ "$output" == *"Resolve manually"* ]]
+  [[ "$output" == *"dot-claude/settings.json"* ]]
 
-  # Confirm the deadlock actually exists: ahead of and behind the upstream.
+  # Live kept its edit; master and origin were untouched; nothing pushed.
+  [ "$(cat "${CLAUDE_HOME_A}/settings.json")" = '{"theme":"custom"}' ]
+  [ "$(git -C "${ORIGIN}" rev-parse master)" = "${master_before}" ]
+  refute git -C "${ORIGIN}" show-ref -q --verify refs/heads/sync/host-a
+  [ "$(git -C "${REPO_A}" rev-parse --abbrev-ref HEAD)" = "master" ]
+
+  # And it stays loud on the next run rather than silently giving up.
+  run sync_as_machine_a sync
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"real conflict"* ]]
+}
+
+@test "doctor remediate moves a legacy commit off the default branch and reports a real conflict" {
+  sync_as_machine_a sync
+  remote_theme_light
+  # An older claude-sync.sh committed a capture on master and then failed
+  # to rebase it: the clone is ahead of and behind its upstream.
+  echo '{"theme":"custom"}' > "${CLAUDE_HOME_A}/settings.json"
+  echo '{"theme":"custom"}' > "${REPO_A}/dot-claude/settings.json"
+  git -C "${REPO_A}" -c user.email=test@test -c user.name=test commit -q -am "sync: host-a legacy"
+  git -C "${REPO_A}" rev-parse HEAD > "${CLAUDE_HOME_A}/.claude-sync-applied-commit"
+  git -C "${REPO_A}" fetch -q
+
   run doctor_as_machine_a
   [ "$status" -ne 0 ]
   [[ "$output" == *"ahead"* ]]
   [[ "$output" == *"behind"* ]]
 
   run doctor_as_machine_a remediate
+  [[ "$output" == *"moved 1 unpushed commit(s) from master onto sync/host-a"* ]]
   [[ "$output" == *"real conflict"* ]]
   [[ "$output" == *"Resolve manually"* ]]
   # Local file was never silently overwritten with either side's content.
   [ "$(cat "${CLAUDE_HOME_A}/settings.json")" = '{"theme":"custom"}' ]
+  # The legacy commit now lives on the sync branch; master is back on origin's line.
+  [ "$(git -C "${REPO_A}" log -1 --format=%s sync/host-a)" = "sync: host-a legacy" ]
+  git -C "${REPO_A}" merge-base --is-ancestor master origin/master
 }
 
 @test "sync reports an unreachable remote as a fetch failure, not a conflict" {
@@ -528,15 +581,6 @@ doctor_as_machine_a() {
 
 # ── Per-machine settings overrides ───────────────────────────────────────
 
-sync_as() {  # sync_as a|b CMD [ARGS...]
-  local m="$1"; shift
-  local home agents repo
-  if [ "$m" = a ]; then home="${CLAUDE_HOME_A}" agents="${AGENTS_HOME_A}" repo="${REPO_A}"
-  else home="${CLAUDE_HOME_B}" agents="${AGENTS_HOME_B}" repo="${REPO_B}"; fi
-  CLAUDE_SYNC_CLAUDE_HOME="${home}" CLAUDE_SYNC_AGENTS_HOME="${agents}" CLAUDE_SYNC_HOSTNAME="host-${m}" \
-  GIT_AUTHOR_NAME=test GIT_AUTHOR_EMAIL=test@test GIT_COMMITTER_NAME=test GIT_COMMITTER_EMAIL=test@test \
-    "${repo}/claude-sync.sh" "$@"
-}
 
 setup_two_machines() {
   echo '{"theme":"dark","enabledPlugins":{"shared@m":true}}' > "${CLAUDE_HOME_A}/settings.json"

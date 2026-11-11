@@ -18,6 +18,9 @@ directories sync from, via `install.sh` (first run on a new machine) and
 
 ## Get your own copy
 
+You need git 2.40 or newer and the GitHub CLI (`gh`), logged in with
+`gh auth login`: every machine's changes go out as a PR that `gh` opens.
+
 This tool syncs your personal config, so you need your own private repo —
 don't point it at this one. On GitHub: click **Use this template** (or fork
 it and later delete the shared history), make it **private**, then:
@@ -44,9 +47,9 @@ directory unless it differs.
 ## Everyday use
 
 ```bash
-~/claude-config/claude-sync.sh sync   # capture local changes, merge with remote, apply back — the default
-~/claude-config/claude-sync.sh push   # capture + commit + push only
-~/claude-config/claude-sync.sh pull   # pull + apply only
+~/claude-config/claude-sync.sh sync   # capture local changes onto sync/<hostname>, bring in the default branch, apply, push and open/update its PR — the default
+~/claude-config/claude-sync.sh push   # capture onto sync/<hostname>, push it and open/update its PR (no apply)
+~/claude-config/claude-sync.sh pull   # bring in the default branch (keeping this machine's unmerged changes) and apply
 ~/claude-config/claude-sync.sh doctor            # check for a stuck sync (report only)
 ~/claude-config/claude-sync.sh doctor remediate  # check, and fix what's safely fixable
 ~/claude-config/claude-sync.sh override list     # this machine's settings overrides (see "Per-machine overrides")
@@ -57,7 +60,8 @@ directory unless it differs.
 isn't currently on its default branch — e.g. if you're using this same
 clone to develop the sync tool itself on a feature branch, the
 `SessionStart`/`SessionEnd` hooks that call `sync` every session won't
-commit your local config onto it.
+commit your local config onto it. They print `sync SKIPPED` and the reason
+on stderr and exit 0, so the hooks don't report a failure.
 
 If a machine's sync state itself is broken — wrong project path, a corrupted
 clone, or you just want to start that machine over — `doctor` won't help
@@ -69,21 +73,27 @@ no notion of "the setup itself is wrong"). Use repair instead:
 ```
 
 This resets *this machine's own sync bookkeeping* — deletes the local
-`~/claude-config` clone, removes this machine's entry from
-`machines/<hostname>.conf` (from the shared repo too, not just locally, so
-it doesn't linger for other machines), and removes the skill-discovery
+`~/claude-config` clone, rewrites this machine's
+`machines/<hostname>.conf` from scratch (the new file reaches the shared
+repo through this machine's sync PR like any other change; nothing is
+pushed to the default branch), and removes the skill-discovery
 symlinks this tool created — then runs through the normal first-time flow
 again (re-clone, re-prompt for the repo URL and project path, bootstrap). It
 does **not** touch your real Claude Code config (`~/.claude/CLAUDE.md`,
 `settings.json`, `~/.claude/agents/`, `~/.claude/hooks/`,
 `~/.agents/skills/`, memory) — only the tool's own state gets reset; your
 actual config gets re-adopted fresh by the bootstrap that follows. Refuses
-to run if the local clone has uncommitted or untracked changes, so it can't
-silently discard something you meant to keep.
+to run while the local clone has changes that aren't on its default branch,
+so it can't silently discard something you meant to keep. The usual cause is
+this machine's pending sync PR, whose changes the clone holds: merge (or
+drop) that PR and `sync` once first. Don't `git stash` or `git reset --hard`
+the clone to get past it. Commits left on the default branch by an older
+`claude-sync.sh` are refused too: `sync` moves them onto `sync/<hostname>`
+as a PR.
 
 Machine profiles (`machines/<profile>/`) and settings overrides
 (`machines/<name>.settings.json`) are shared repo content, so repair keeps
-them. It only removes the `.conf`, so if this machine followed another
+them. It only rewrites the `.conf`, so if this machine followed another
 profile (a `PROFILE=` line), give it again: `install.sh --repair --profile
 <name>`.
 
@@ -94,14 +104,69 @@ so it can prompt you, or set `CLAUDE_SYNC_REPO_URL=<your repo>` beforehand
 touching anything rather than repairing.
 
 If a machine's `enabledPlugins`/settings never seem to catch up with what's
-on your default branch, it's likely a stuck sync: `sync`'s capture step
-commits the local `settings.json` *before* pulling, so if that pull then
-conflicts with a change already pushed, it aborts before ever pushing or
-applying — and repeats on every future sync until fixed. `doctor` detects
-this (a stuck rebase, a diverged branch, or local `settings.json` merely
-being stale) and `doctor remediate` retries automatically. A genuine content
-conflict (both sides edited the same key) is reported for manual resolution
-rather than guessed at — nothing gets silently discarded.
+on your default branch, first check its sync PR is merged: until then, other
+machines don't have its changes. If its own sync keeps failing with "a real
+conflict", its pending changes and a merged change edited the same lines:
+the message says how to resolve or drop them. `doctor` also detects a stuck
+rebase, a clone left with commits on the default branch by an older
+`claude-sync.sh` (the next sync moves them onto `sync/<hostname>` as a
+PR), or local `settings.json` merely being stale, and `doctor remediate`
+fixes what it safely can. A genuine content conflict is reported for manual
+resolution rather than guessed at — nothing gets silently discarded.
+
+## How changes reach other machines
+
+Nothing is ever pushed to the default branch. Each machine has one branch,
+`sync/<hostname>`, holding everything it has captured that isn't merged
+yet, as a single commit on top of the default branch. Every `sync`
+rebuilds that commit, force-pushes the branch (with a lease, and only that
+branch) and opens a PR for it with `gh` if none is open. Later syncs from
+the same machine update the same PR. Nothing auto-merges: once you merge
+the PR, every other machine picks the change up on its next `sync` or
+`pull`, and the machine that made it drops its branch on its next sync.
+
+While a PR is pending, the clone stays on the default branch, but its
+working tree shows this machine's pending state, so `git status` in the
+clone lists the pending changes as unstaged or untracked. That's expected;
+nothing is staged, so a commit made by hand doesn't pick them up. Apply, `doctor`, profiles and overrides all use that state, so a
+machine keeps its own unmerged edits; and its own open PR never makes a
+sync refuse to capture. Hand edits in the clone are committed to the sync
+branch on the next run. Don't `git stash`, `git reset --hard` or
+`git commit` in the clone while a PR is pending, or the next sync may
+push a PR that drops files (such as a new `machines/<hostname>.conf`).
+
+`sync`, `push`, `bootstrap`, `override add|remove` and `profile use|copy`
+need the GitHub CLI, logged in (`gh auth login`). The owner/repo comes from
+the `origin` URL; set `CLAUDE_SYNC_GH_REPO=owner/repo` if it can't be
+worked out, and `CLAUDE_SYNC_GH=<path>` to use a `gh` that isn't on
+`PATH`. Without `gh`, the branch is still pushed and the live config
+still applied, but the command exits non-zero and prints the
+`gh pr create` command to run by hand. That repeats on every sync until a
+PR is open; if you open it by hand, the message also prints the
+`git config claude-sync.prVerified <sha>` command that silences it.
+`install.sh` prints a hint when `gh` is missing or not logged in.
+
+It needs git 2.40 or newer and refuses clearly on an older one. Two runs at
+once (one session's `SessionEnd` and another's `SessionStart`) are kept
+apart by `flock` on a file in the clone's `.git`, which frees itself when a
+run dies. A run waits `CLAUDE_SYNC_LOCK_WAIT` seconds (default 10), then
+fails; `CLAUDE_SYNC_FLOCK=<path>` picks the binary. Without `flock` (stock
+macOS, for one) a weaker pid lock is used, with a warning on every run.
+
+If GitHub keeps a merged PR's branch, the machine ignores that stale
+branch: it remembers the tip it last pushed, and a fresh clone asks `gh`
+whether a merged or closed PR has exactly that tip. The next push replaces
+the stale branch and opens a new PR.
+
+Every failure (a refusal, a git or gh error, a rejected push, a conflict
+with a merged change) prints what failed and what to do on stderr and
+exits non-zero. The `SessionStart`/`SessionEnd` hooks log that output to
+`~/.claude/claude-config-sync.log` and show "claude-config sync failed"
+without breaking the session.
+
+To drop a machine's pending changes instead of merging them: close the
+PR, delete its `sync/<hostname>` branch on GitHub, then on that machine run
+`git -C ~/claude-config branch -D sync/<hostname> && git -C ~/claude-config reset -q --hard && ~/claude-config/claude-sync.sh pull`.
 
 ## What's synced
 
@@ -158,11 +223,13 @@ in question:
 
 ```bash
 ~/claude-config/claude-sync.sh override list
-~/claude-config/claude-sync.sh override add '.enabledPlugins["dm@neural-initiative"]'   # make machine-only; other machines drop it on their next sync
+~/claude-config/claude-sync.sh override add '.enabledPlugins["dm@neural-initiative"]'   # make machine-only; other machines drop it once the PR is merged
 ~/claude-config/claude-sync.sh override remove '.enabledPlugins["dm@neural-initiative"]'  # follow the shared settings again
 ```
 
-Editing the file by hand works too; the next `sync` picks it up. Override
+Editing the file by hand in the clone works too; the next `sync` picks it
+up, including while this machine's sync PR is pending (the clone's working
+tree shows the pending version). Override
 files live in `machines/`, so they're never published to the public mirror.
 
 ## Per-machine profiles
@@ -205,7 +272,7 @@ machine goes back to the shared version on its next sync.
 `profile copy` lists the executable hook scripts it will copy and asks
 first (`--yes` skips the question). It refuses to replace a profile this
 machine already has unless you add `--force`. `profile use` and `profile
-copy` commit and push like `override add`. `doctor` reports a `.disabled`
+copy` go out through the sync PR like `override add`. `doctor` reports a `.disabled`
 marker that hides nothing, live files that differ from the shared config
 plus the profile, and hook commands in `settings.json` that point at a
 script that doesn't exist (e.g. a hook you disabled that is still wired up).

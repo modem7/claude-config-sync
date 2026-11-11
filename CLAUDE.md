@@ -4,7 +4,7 @@ This repo syncs Claude Code's global config (`CLAUDE.md`, `settings.json`, agent
 
 ## How it works
 
-- `claude-sync.sh sync` = capture local files into the repo and commit, rebase onto upstream, push, then apply the repo back to the machine. Copy-based, never symlinks. Apply mirrors with `rsync --delete`.
+- `claude-sync.sh sync` = capture local files into the clone and commit onto `sync/<hostname>` (one commit on top of the default branch), rebuild that onto origin's default branch, apply it back to the machine, then force-push (with a lease) only that branch and open its PR with `gh`. It never commits or pushes to the default branch and never auto-merges. The clone stays on the default branch with the pending state in its working tree (not staged). Copy-based, never symlinks. Apply mirrors with `rsync --delete`. Every failure prints what to do on stderr and exits non-zero. Runs are serialised by `flock` on `.git/claude-sync.flock` (a pid symlink lock when `flock` is missing). Needs git 2.40+ and `gh`. `install.sh --repair` also goes through the PR.
 - Shared files live in `dot-claude/` and `dot-agents/skills/`. Per-machine differences live only under `machines/`:
   - `machines/<hostname>.conf` (project path, optional `PROFILE=`)
   - `machines/<hostname>.settings.json` (settings override)
@@ -13,7 +13,8 @@ This repo syncs Claude Code's global config (`CLAUDE.md`, `settings.json`, agent
 
 ## Rules
 
-- Open a PR. Never push to the default branch. `claude-sync.sh` skips syncing while this clone is on a feature branch, which is expected.
+- Open a PR. Never push to the default branch. `claude-sync.sh` skips syncing (it prints "sync SKIPPED" and exits 0) while this clone is on a feature branch, which is expected.
+- Develop in a separate `git worktree` cut from `origin/<default>`, not in the live clone: while a sync PR is pending, the live clone's working tree carries that pending state.
 - Do not edit `memory/` or `machines/` by hand unless the task is about them. Sync rewrites them.
 - Code, tests and docs outside `machines/`, `memory/` and `private/` must stay generic: placeholder hostnames (`host-a`, `host-b`), no personal paths, names or servers. They are published to the public template.
 - Agents in `dot-claude/agents/` are published, so they must be generic: no personal hosts, URLs, repos or paths. An agent tied to one setup goes in `machines/<profile>/agents/`. A profile agent with the same name replaces the shared one on that machine, so keep the two in step when you change either.

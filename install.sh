@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+set +x
 
 # install.sh [--repair|--reinstall] [--profile NAME]
 # --profile (or CLAUDE_SYNC_PROFILE) makes this machine follow the machine
@@ -48,10 +49,14 @@ HOSTNAME_VAL="${CLAUDE_SYNC_HOSTNAME:-$(hostname)}"
 CLAUDE_HOME="${CLAUDE_SYNC_CLAUDE_HOME:-${HOME}/.claude}"
 AGENTS_HOME="${CLAUDE_SYNC_AGENTS_HOME:-${HOME}/.agents}"
 
+# Prerequisites: git 2.40+, and the GitHub CLI (gh) logged in with
+# 'gh auth login'. claude-sync.sh never pushes to the default branch; it
+# pushes sync/<hostname> and opens a PR for it with gh.
+#
 # --repair (alias --reinstall) resets this machine's OWN sync bookkeeping —
 # the local repo clone, this machine's entry in machines/<hostname>.conf
-# (removed from the shared repo too, not just locally, so a stale entry
-# doesn't linger for other machines to see), and the skill-discovery
+# (rewritten from scratch; the change reaches the shared repo through this
+# machine's sync PR like any other), and the skill-discovery
 # symlinks this tool created — so the flow below runs exactly as it would
 # on a machine that has never run this script before. It does NOT touch
 # real Claude Code config content (~/.claude/CLAUDE.md, settings.json,
@@ -71,12 +76,17 @@ if [ "${REPAIR}" = "true" ]; then
 
   if [ -d "${REPO_DIR}/.git" ]; then
     if [ -n "$(git -C "${REPO_DIR}" status --porcelain 2>/dev/null)" ]; then
-      echo "Refusing to repair: ${REPO_DIR} has uncommitted or untracked changes. Commit, stash, or discard them first." >&2
+      echo "Refusing to repair: ${REPO_DIR} has changes that are not on its default branch." >&2
+      echo "  The usual cause is this machine's pending sync PR (sync/${HOSTNAME_VAL}): the clone holds its changes." >&2
+      echo "  Merge that PR (or close it and delete the branch), run 'claude-sync.sh sync', then re-run this." >&2
+      echo "  Do not use git stash or git reset --hard in the clone: that hides or loses those changes." >&2
       exit 1
     fi
     if git -C "${REPO_DIR}" rev-parse --abbrev-ref --symbolic-full-name '@{u}' >/dev/null 2>&1 \
       && [ -n "$(git -C "${REPO_DIR}" log '@{u}..HEAD' --oneline 2>/dev/null)" ]; then
-      echo "Refusing to repair: ${REPO_DIR} has unpushed commits. Push or discard them first." >&2
+      echo "Refusing to repair: ${REPO_DIR} has commits on its default branch that are not on origin." >&2
+      echo "  Run 'claude-sync.sh sync' to move them onto sync/${HOSTNAME_VAL} and open a PR (never push them" >&2
+      echo "  to the default branch), then merge or close that PR and re-run this." >&2
       exit 1
     fi
   fi
@@ -84,12 +94,9 @@ if [ "${REPAIR}" = "true" ]; then
   rm -rf "${REPO_DIR}"
   git clone "${REPO_URL}" "${REPO_DIR}"
 
-  HOST_CONF_PATH="machines/${HOSTNAME_VAL}.conf"
-  if [ -f "${REPO_DIR}/${HOST_CONF_PATH}" ]; then
-    git -C "${REPO_DIR}" rm -q "${HOST_CONF_PATH}"
-    git -C "${REPO_DIR}" commit -q -m "repair: reset ${HOSTNAME_VAL}'s machine config"
-    git -C "${REPO_DIR}" push
-  fi
+  # Only from the working tree: the new conf written below goes out with
+  # this machine's sync PR, so nothing is pushed to the default branch.
+  rm -f "${REPO_DIR}/machines/${HOSTNAME_VAL}.conf"
 
   if [ -d "${CLAUDE_HOME}/skills" ]; then
     for link in "${CLAUDE_HOME}"/skills/*; do
@@ -116,6 +123,16 @@ fi
 # github MCP plugin is disabled - see dot-claude/settings.json), so make
 # sure it's actually present. No-ops if already installed.
 "${REPO_DIR}/gh-tools.sh" || true
+
+# claude-sync.sh opens each machine's sync PR with gh. Only a hint here:
+# without gh, syncs still push the branch, then fail loudly.
+GH_CMD="${CLAUDE_SYNC_GH:-gh}"
+if ! command -v "${GH_CMD}" >/dev/null 2>&1; then
+  echo "Note: the GitHub CLI (gh) is not installed. claude-sync.sh needs it to open its sync PRs;" >&2
+  echo "  without it every sync pushes sync/${HOSTNAME_VAL} and then fails. Install gh, then run 'gh auth login'." >&2
+elif ! GH_PROMPT_DISABLED=1 "${GH_CMD}" auth status >/dev/null 2>&1; then
+  echo "Note: gh is not logged in, so claude-sync.sh can't open its sync PRs. Run 'gh auth login'." >&2
+fi
 
 # The agent-memory plugin (synced from claude.ai, not this repo) runs
 # `python` and needs mcp 1.x plus a couple of pip packages, so provide them.

@@ -4,6 +4,7 @@
 
 setup() {
   load 'test_helper'
+  install_fake_gh
 
   ORIGIN="${BATS_TEST_TMPDIR}/origin.git"
   git init --bare -q "${ORIGIN}"
@@ -44,7 +45,7 @@ setup() {
   PA="${REPO_A}/machines/host-a"
 }
 
-sync_as() {  # sync_as a|b CMD [ARGS...]
+raw_as() {  # raw_as a|b CMD [ARGS...]: runs claude-sync.sh as that machine
   local m="$1"; shift
   local home agents repo
   if [ "$m" = a ]; then home="${CLAUDE_HOME_A}" agents="${AGENTS_HOME_A}" repo="${REPO_A}"
@@ -52,6 +53,18 @@ sync_as() {  # sync_as a|b CMD [ARGS...]
   CLAUDE_SYNC_CLAUDE_HOME="${home}" CLAUDE_SYNC_AGENTS_HOME="${agents}" CLAUDE_SYNC_HOSTNAME="host-${m}" \
   GIT_AUTHOR_NAME=test GIT_AUTHOR_EMAIL=test@test GIT_COMMITTER_NAME=test GIT_COMMITTER_EMAIL=test@test \
     "${repo}/claude-sync.sh" "$@"
+}
+
+# Like raw_as, but once a repo-changing command succeeds its sync PR is
+# merged and the machine syncs again, as if the change was shared at once.
+sync_as() {  # sync_as a|b CMD [ARGS...]
+  local m="$1" rc=0
+  shift
+  raw_as "$m" "$@" || rc=$?
+  [ "${rc}" -eq 0 ] || return "${rc}"
+  case "${1:-}" in
+    push|sync|bootstrap|override|profile) merge_and_converge "${ORIGIN}" "host-${m}" raw_as "$m" ;;
+  esac
 }
 
 # Edits origin from a scratch clone, as another machine or a merged PR
@@ -545,6 +558,9 @@ run_install() {  # run_install HOST REPO_DIR CLAUDE_HOME AGENTS_HOME [ARGS...]
   grep -qx 'PROFILE=host-a' "${repo}/machines/host-c.conf"
   [ "$(cat "${home}/agents/helper.md")" = "host-a helper" ]
   refute origin_has machines/host-c
+  # Its first sync went out as a PR, which holds the conf but no profile dir.
+  git -C "${ORIGIN}" cat-file -e sync/host-c:machines/host-c.conf
+  refute git -C "${ORIGIN}" cat-file -e sync/host-c:machines/host-c
 }
 
 @test "install.sh --profile refuses a profile that does not exist" {
@@ -578,6 +594,22 @@ run_install() {  # run_install HOST REPO_DIR CLAUDE_HOME AGENTS_HOME [ARGS...]
   grep -qx 'PROFILE=host-a' "${REPO_B}/machines/host-b.conf"
   [ "$(cat "${CLAUDE_HOME_B}/agents/helper.md")" = "host-a helper" ]
   origin_has machines/host-a/agents/helper.md
+}
+
+@test "install.sh --repair on a machine that synced before sends its new conf out in the same run" {
+  seed_host_a_profile
+  sync_as b profile use host-a >/dev/null
+  [ -f "${CLAUDE_HOME_B}/.claude-sync-applied-commit" ]
+  grep -qx 'PROFILE=host-a' <(origin_cat machines/host-b.conf)
+
+  # No --profile: the rewritten conf drops PROFILE=.
+  run run_install host-b "${REPO_B}" "${CLAUDE_HOME_B}" "${AGENTS_HOME_B}" --repair
+  [ "$status" -eq 0 ]
+  run grep -c '^PROFILE=' "${REPO_B}/machines/host-b.conf"
+  [ "$output" = "0" ]
+  run bash -c "git -C '${ORIGIN}' show sync/host-b:machines/host-b.conf | grep -c '^PROFILE='"
+  [ "$output" = "0" ]
+  grep -qx 'PROFILE=host-a' <(origin_cat machines/host-b.conf)
 }
 
 @test "install.sh rejects an unknown option" {
