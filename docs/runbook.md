@@ -86,4 +86,4 @@ Commit first; the script refuses on a dirty tree.
 ~/claude-config/publish-public.sh
 ```
 
-It aborts if `machines/`, `memory/` or `private/` ended up in the generated tree.
+It aborts if `machines/`, `memory/`, `private/` or `weekly-review/` ended up in the generated tree.

@@ -70,3 +70,23 @@ setup() {
   grep -q 'assert_public_tree_clean "${PUB_DIR}"' "${REPO_ROOT}/publish-public.sh"
   refute grep -q 'woodpecker' "${REPO_ROOT}/publish-public.sh"
 }
+
+@test "assert_public_tree_clean catches weekly-review/" {
+  mkdir -p "${BATS_TEST_TMPDIR}/p5/weekly-review/tests"
+  echo 'x' > "${BATS_TEST_TMPDIR}/p5/weekly-review/tests/test_cli.py"
+  run assert_public_tree_clean "${BATS_TEST_TMPDIR}/p5"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"./weekly-review"* ]]
+
+  mkdir -p "${BATS_TEST_TMPDIR}/p6/docs/weekly-review"
+  run assert_public_tree_clean "${BATS_TEST_TMPDIR}/p6"
+  [ "$status" -eq 0 ]
+}
+
+@test "publish-public.sh does not whitelist weekly-review" {
+  [ -f "${REPO_ROOT}/publish-public.sh" ] || skip "publish-public.sh is not part of the public mirror"
+  local paths
+  paths="$(sed -n '/^PATHS=(/,/^)/{/^  /s/^  //p}' "${REPO_ROOT}/publish-public.sh")"
+  [ -n "${paths}" ]
+  refute grep -q 'weekly-review' <<< "${paths}"
+}

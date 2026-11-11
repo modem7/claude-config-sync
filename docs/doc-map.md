@@ -18,6 +18,7 @@ Which doc to update for each kind of change. Read it before opening a PR, then r
 | `dot-claude/CLAUDE.md` | Global instructions synced to every machine. |
 | `machines/<profile>/NOTES.md` | Private notes for one machine profile. Never published. |
 | `private/` | Repo-wide private notes. Never published. |
+| `weekly-review/README.md` | Private weekly review job. Never published. |
 
 ## Change to docs
 

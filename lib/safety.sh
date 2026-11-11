@@ -20,16 +20,17 @@ assert_no_denylisted_files() {
 
 # assert_public_tree_clean TREE
 # The public mirror must never get machines/ (hostnames, paths, machine
-# profiles and notes, settings overrides), memory/ (personal auto-memory) or
-# private/ (repo-wide private notes). Fails, listing what leaked, if TREE has
-# any path under them, or any *.settings.json under a machines directory at
-# any depth.
+# profiles and notes, settings overrides), memory/ (personal auto-memory),
+# private/ (repo-wide private notes) or weekly-review/ (transcript review job).
+# Fails, listing what leaked, if TREE has any path under them, or any
+# *.settings.json under a machines directory at any depth.
 assert_public_tree_clean() {
   local tree="$1"
   local leaked
   leaked="$(cd "${tree}" && find . -path ./.git -prune -o \( \
       -path ./machines -o -path './machines/*' -o -path ./memory -o -path './memory/*' \
       -o -path ./private -o -path './private/*' \
+      -o -path ./weekly-review -o -path './weekly-review/*' \
       -o \( -path '*/machines/*' -name '*.settings.json' \) \) -print)"
   if [ -n "${leaked}" ]; then
     echo "Refusing to publish: per-machine or personal content is in the public tree:" >&2

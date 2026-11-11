@@ -380,7 +380,7 @@ for the implementation plan.
 
 This repo is a published mirror of the tool code (`install.sh`,
 `claude-sync.sh`, hooks, `lib/`, `tests/`) from its maintainer's private
-sync repo, with their personal `memory/` and `machines/` left out. It isn't
+sync repo, with personal and private directories left out. It isn't
 pushed to directly. To pick up updates: `git pull` this repo's default
 branch into your own clone, then re-run `install.sh`/`claude-sync.sh sync`
 to apply.

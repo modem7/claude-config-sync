@@ -16,7 +16,7 @@ This repo syncs Claude Code's global config (`CLAUDE.md`, `settings.json`, agent
 - Open a PR. Never push to the default branch. `claude-sync.sh` skips syncing (it prints "sync SKIPPED" and exits 0) while this clone is on a feature branch, which is expected.
 - Develop in a separate `git worktree` cut from `origin/<default>`, not in the live clone: while a sync PR is pending, the live clone's working tree carries that pending state.
 - Do not edit `memory/` or `machines/` by hand unless the task is about them. Sync rewrites them.
-- Code, tests and docs outside `machines/`, `memory/` and `private/` must stay generic: placeholder hostnames (`host-a`, `host-b`), no personal paths, names or servers. They are published to the public template.
+- Code, tests and docs outside `machines/`, `memory/`, `private/` and `weekly-review/` must stay generic: placeholder hostnames (`host-a`, `host-b`), no personal paths, names or servers. They are published to the public template.
 - Agents in `dot-claude/agents/` are published, so they must be generic: no personal hosts, URLs, repos or paths. An agent tied to one setup goes in `machines/<profile>/agents/`. A profile agent with the same name replaces the shared one on that machine, so keep the two in step when you change either.
 - Shell scripts: `shellcheck install.sh claude-sync.sh npm-tools.sh gh-tools.sh lib/*.sh` must pass.
 - Run `bats tests` before opening a PR. Tests use a fake HOME through the `CLAUDE_SYNC_*` environment variables. Never run `claude-sync.sh` or `install.sh` against the real HOME while testing.
@@ -30,4 +30,4 @@ This repo syncs Claude Code's global config (`CLAUDE.md`, `settings.json`, agent
 - `docs/doc-map.md`: which doc to update for each kind of change, and the twins that must stay in step.
 - `docs/agents.md`: the shared agents, their models and rules.
 - `docs/superpowers/specs/2026-07-25-claude-config-sync-design.md`: the design.
-- If they exist (private repo only): `private/` for repo-wide private notes, and `machines/<profile>/NOTES.md` for the profile you are working on. These never reach the public mirror.
+- If they exist (private repo only): `private/` for repo-wide private notes, `weekly-review/` (the private weekly transcript review job, see its README), and `machines/<profile>/NOTES.md` for the profile you are working on. These never reach the public mirror.
