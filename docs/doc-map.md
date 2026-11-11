@@ -35,6 +35,7 @@ Which doc to update for each kind of change. Read it before opening a PR, then r
 | Find a new failure mode or add a guard | A row in `docs/risks.md` with the guard and the test name. |
 | Change a global instruction | `dot-claude/CLAUDE.md` and the live `~/.claude/CLAUDE.md`, which must stay identical. |
 | Change plugins or `settings.json` | The plugin list in `README.public.md`. |
+| Change the weekly review job (`weekly-review/`) | `weekly-review/README.md` (flags, env vars, config keys and approval files; `schedule/README.md` for scheduling), the `weekly-review/` rows in `docs/risks.md` when a model call, post or guard changes, and the tests under `weekly-review/tests/`. |
 | Add, move or remove a doc | This map, and "Read first" in `CLAUDE.md` if Claude should read it. |
 
 ## Twins that must stay in step

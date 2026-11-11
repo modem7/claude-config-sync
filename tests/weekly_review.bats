@@ -54,3 +54,18 @@ setup() {
   [ -f "${XDG_STATE_HOME}/claude-weekly-review/watermark.json" ]
   [[ "$(ls -ld "${XDG_STATE_HOME}/claude-weekly-review")" == drwx------* ]]
 }
+
+@test "weekly-review --triage and --post are refused without approval files" {
+  local bin="${BATS_TEST_TMPDIR}/bin" marker="${BATS_TEST_TMPDIR}/called" tool
+  mkdir -p "${bin}"
+  for tool in gh claude; do
+    printf '#!/bin/sh\necho "%s" >> "%s"\n' "${tool}" "${marker}" > "${bin}/${tool}"
+    chmod +x "${bin}/${tool}"
+  done
+  PATH="${bin}:${PATH}" run python3 "${WR_DIR}/run.py" --triage --post --issue 1
+  [ "$status" -eq 3 ]
+  [[ "$output" == *"approved-triage does not exist"* ]]
+  [[ "$output" == *"approved-post does not exist"* ]]
+  [ ! -e "${marker}" ]
+  [ ! -e "${XDG_STATE_HOME}" ]
+}
