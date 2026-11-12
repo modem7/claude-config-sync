@@ -1,5 +1,16 @@
 # Claude Code config sync — design
 
+> **Superseded (2026-11, Python port phase 1):** `claude-sync.sh` and
+> `install.sh` are now shims that run the Python package `claude_sync/`
+> (`python3 -m claude_sync`, `python3 -m claude_sync.install`), with
+> `claude-sync.cmd` and `install.cmd` on Windows. The bash described here is
+> kept in `legacy/` and runs only with `CLAUDE_SYNC_IMPL=bash`. Copies no
+> longer use `rsync`, settings no longer use `jq`, and the lock is an OS lock
+> on the same `.git/claude-sync.flock` (`CLAUDE_SYNC_FLOCK` is dropped). The
+> behaviour is otherwise the same; the deliberate differences are in
+> `docs/python-port.md` and the design in
+> `docs/superpowers/specs/2026-11-11-python-port-design.md`.
+
 ## Goal
 
 Keep Claude Code setup (global instructions, settings, personal skills, and
@@ -116,6 +127,11 @@ PRIMARY_PROJECT_PATH=/home/modem7/project
 
 `claude-sync.sh` reads this, derives the encoded folder name, and treats
 that folder's `memory/` as the sync target.
+
+> **Superseded (2026-11-11), the encoding rule:** Claude Code turns every
+> character other than `A-Z`, `a-z` and `0-9` into `-`, not only `/`.
+> `claude_sync/memorypath.py` follows that; the legacy bash keeps the `/`
+> rule. See `docs/python-port.md`.
 
 **Known limitation:** the auto-memory system mixes globally-applicable
 entries (feedback/reference-type, e.g. "no Co-Authored-By trailers") with

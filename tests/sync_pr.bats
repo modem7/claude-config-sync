@@ -15,6 +15,8 @@ setup() {
   git clone -q "${ORIGIN}" "${SEED}" 2>/dev/null
   mkdir -p "${SEED}/lib" "${SEED}/machines" "${SEED}/dot-claude/agents" "${SEED}/dot-agents/skills" "${SEED}/memory"
   cp "${REPO_ROOT}/claude-sync.sh" "${SEED}/claude-sync.sh"
+  mkdir -p "${SEED}/legacy"
+  cp "${REPO_ROOT}"/legacy/*.sh "${SEED}/legacy/"
   cp "${REPO_ROOT}"/lib/*.sh "${SEED}/lib/"
   chmod +x "${SEED}/claude-sync.sh"
   touch "${SEED}/dot-claude/agents/.gitkeep" "${SEED}/dot-agents/skills/.gitkeep" "${SEED}/memory/.gitkeep"

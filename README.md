@@ -4,9 +4,10 @@ A sync tool for Claude Code's global configuration — `CLAUDE.md`,
 `settings.json`, personal skills, hooks, and "global" auto-memory — across
 every machine you run `claude` on.
 
-This repo is the *tool* (`install.sh`, `claude-sync.sh`, hooks, lib, tests)
-plus a starting-point `dot-claude/CLAUDE.md` and `dot-claude/settings.json`
-you're expected to edit to taste. It is **not** meant to be synced from
+This repo is the *tool* (`install.sh`, `claude-sync.sh`, the `claude_sync/`
+Python package they run, hooks, lib, tests) plus a starting-point
+`dot-claude/CLAUDE.md` and `dot-claude/settings.json` you're expected to
+edit to taste. It is **not** meant to be synced from
 directly — see "Get your own copy" below.
 
 ## Why
@@ -18,8 +19,10 @@ directories sync from, via `install.sh` (first run on a new machine) and
 
 ## Get your own copy
 
-You need git 2.40 or newer and the GitHub CLI (`gh`), logged in with
-`gh auth login`: every machine's changes go out as a PR that `gh` opens.
+You need Python 3.12 or newer, git 2.40 or newer and the GitHub CLI
+(`gh`), logged in with `gh auth login`: every machine's changes go out as a
+PR that `gh` opens. On Windows, clone with `-c core.autocrlf=false` and run
+`install.cmd` and `claude-sync.cmd` in place of the `.sh` scripts.
 
 This tool syncs your personal config, so you need your own private repo —
 don't point it at this one. On GitHub: click **Use this template** (or fork
@@ -55,6 +58,15 @@ directory unless it differs.
 ~/claude-config/claude-sync.sh override list     # this machine's settings overrides (see "Per-machine overrides")
 ~/claude-config/claude-sync.sh profile list      # this machine's profile (see "Per-machine profiles")
 ```
+
+`claude-sync.sh` and `install.sh` are shims that run the Python package in
+`claude_sync/` (`python3 -m claude_sync` and `python3 -m
+claude_sync.install`) from the clone, passing every argument through. Run
+the installer with the system Python, not a venv: its pip step installs into
+whichever Python runs it. `install.sh --project-path /absolute/path` skips
+the project path prompt. `CLAUDE_SYNC_IMPL=bash` runs the old bash scripts,
+kept in `legacy/` until the port is finished. What differs from the bash,
+and why, is in `docs/python-port.md`.
 
 `push`/`sync`/`bootstrap` skip (without committing anything) if this clone
 isn't currently on its default branch — e.g. if you're using this same
@@ -148,10 +160,10 @@ PR is open; if you open it by hand, the message also prints the
 
 It needs git 2.40 or newer and refuses clearly on an older one. Two runs at
 once (one session's `SessionEnd` and another's `SessionStart`) are kept
-apart by `flock` on a file in the clone's `.git`, which frees itself when a
-run dies. A run waits `CLAUDE_SYNC_LOCK_WAIT` seconds (default 10), then
-fails; `CLAUDE_SYNC_FLOCK=<path>` picks the binary. Without `flock` (stock
-macOS, for one) a weaker pid lock is used, with a warning on every run.
+apart by an OS lock on a file in the clone's `.git`, which frees itself when
+a run dies. A run waits `CLAUDE_SYNC_LOCK_WAIT` seconds (default 10; it must
+be a number of seconds, 0 or more), then fails. `CLAUDE_SYNC_FLOCK` is gone:
+the Python takes the lock itself, on Linux, macOS and Windows alike.
 
 If GitHub keeps a merged PR's branch, the machine ignores that stale
 branch: it remembers the tip it last pushed, and a fresh clone asks `gh`
@@ -274,8 +286,10 @@ first (`--yes` skips the question). It refuses to replace a profile this
 machine already has unless you add `--force`. `profile use` and `profile
 copy` go out through the sync PR like `override add`. `doctor` reports a `.disabled`
 marker that hides nothing, live files that differ from the shared config
-plus the profile, and hook commands in `settings.json` that point at a
-script that doesn't exist (e.g. a hook you disabled that is still wired up).
+plus the profile, hook commands in `settings.json` that point at a
+script that doesn't exist (e.g. a hook you disabled that is still wired up),
+and hook scripts committed without the exec bit. Sync sets that bit on new
+hooks itself, so a hook added on Windows still runs on Linux.
 
 **Restoring on new infrastructure:** a rebuilt machine with the same
 hostname just works, since its conf and profile are in the repo. With a
@@ -305,7 +319,8 @@ Plugins (all from `claude-plugins-official` unless noted):
 - `deployment-engineer` (`awesome-claude-code-plugins`) — CI/CD, Docker, cloud/K8s deploys
 - `crowdsec` (`crowdsecurity`) — CrowdSec install/config/ops
 - `andrej-karpathy-skills` (`karpathy-skills`) — behavioral guidelines against overcomplication
-- `i-have-adhd` — ADHD-friendly task/focus workflow
+- `i-have-adhd` (`i-have-adhd`) — ADHD-friendly task/focus workflow
+- `claude-code-wakatime` (`wakatime`) — coding-time tracking with WakaTime
 
 Skills in `dot-agents/skills/` (`find-skills`,
 `usage-audit`) — a few example personal skills as a starting point; prune or
@@ -333,15 +348,17 @@ Claude Code plugin/skill listings.
 Some tools support a Claude Code workflow without being installed through the
 plugin marketplace, so `settings.json`'s `enabledPlugins` has no way to
 represent them, and `claude-sync.sh` has no way to carry them via git. These
-are provisioned imperatively instead, via `npm-tools.sh` (declared in
-`NPM_TOOLS` at the top of that file). Edit that list for your own tools; it
+are provisioned imperatively instead, by the installer (declared in
+`NPM_TOOLS` in `claude_sync/tools.py`, and at the top of `npm-tools.sh` for
+the legacy bash installer). Edit that list for your own tools; it
 ships with one example:
 
 - [`ccusage`](https://www.npmjs.com/package/ccusage) — Claude Code usage/cost
   analysis from local session logs.
 
-`install.sh` runs `npm-tools.sh` on every invocation, not just first-time
-setup — `npm install -g <pkg>@latest` installs if missing, upgrades if
+`install.sh` runs this npm step on every invocation, not just first-time
+setup — `npm install -g <pkg>@latest` (unpinned, so always the latest
+release) installs if missing, upgrades if
 outdated, and no-ops if already current, so re-running `install.sh` on an
 already-set-up machine doubles as an update check. If `npm` isn't available
 on a machine, this step is skipped with a message rather than failing the
@@ -350,14 +367,18 @@ rest of the install.
 ## Python dependencies for the agent-memory plugin
 
 The agent-memory plugin arrives via claude.ai plugin sync, so its
-dependencies can't be carried here either. `install.sh` runs
-`python-tools.sh` on every invocation, which:
+dependencies can't be carried here either. `install.sh` runs its Python
+step (`python-tools.sh` in the legacy bash installer) on every invocation,
+which:
 
 - installs `python-is-python3` via apt if there's no `python` command (the
   plugin's MCP server and hooks run `python`, and Ubuntu only ships
   `python3`);
 - runs `pip install --break-system-packages 'mcp<2' aiosqlite pyyaml` (the
-  plugin's server uses the mcp 1.x API, which mcp 2.x removed).
+  plugin's server uses the mcp 1.x API, which mcp 2.x removed) with the
+  Python that runs the installer, as `python -I -m pip`. These are version
+  ranges, not hash-checked. On Windows the flag is left out, and the
+  `python-is-python3` step only says what to do.
 
 Either step is skipped with a message if apt-get or python3 is missing.
 
@@ -370,6 +391,8 @@ machine. Each machine records its primary project path in
 "global" for sync purposes — see the design spec's "Known limitation" for
 what happens if project-specific memory entries start accumulating there.
 
+On Windows the project path is stored in its native form (`Z:\projects`); an older `machines/<hostname>.conf` with the Git Bash form (`/z/projects`) is still read and converted. If the encoded memory folder name is over 200 characters, Claude Code shortens it with a hash that claude-sync does not reproduce, so sync warns and `doctor` reports an issue. Synced files under `dot-claude/`, `dot-agents/` and `memory/` keep their exact bytes (`.gitattributes` unsets `text` there).
+
 ## Design
 
 See `docs/superpowers/specs/2026-07-25-claude-config-sync-design.md` for
@@ -379,7 +402,7 @@ for the implementation plan.
 ## Getting updates to this tool
 
 This repo is a published mirror of the tool code (`install.sh`,
-`claude-sync.sh`, hooks, `lib/`, `tests/`) from its maintainer's private
+`claude-sync.sh`, `claude_sync/`, hooks, `lib/`, `tests/`) from its maintainer's private
 sync repo, with personal and private directories left out. It isn't
 pushed to directly. To pick up updates: `git pull` this repo's default
 branch into your own clone, then re-run `install.sh`/`claude-sync.sh sync`

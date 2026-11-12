@@ -20,6 +20,8 @@ setup() {
   git clone -q "${ORIGIN}" "${SEED}"
   mkdir -p "${SEED}/lib" "${SEED}/machines" "${SEED}/dot-claude/agents" "${SEED}/dot-agents/skills" "${SEED}/memory"
   cp "${REPO_ROOT}/claude-sync.sh" "${SEED}/claude-sync.sh"
+  mkdir -p "${SEED}/legacy"
+  cp "${REPO_ROOT}"/legacy/*.sh "${SEED}/legacy/"
   cp "${REPO_ROOT}/npm-tools.sh" "${SEED}/npm-tools.sh"
   cp "${REPO_ROOT}/gh-tools.sh" "${SEED}/gh-tools.sh"
   cp "${REPO_ROOT}"/lib/*.sh "${SEED}/lib/"
@@ -153,6 +155,8 @@ sync_as() {  # sync_as a|b CMD [ARGS...]
   git -C "${FIRST_REPO}" init -q
   git -C "${FIRST_REPO}" remote add origin "${EMPTY_ORIGIN}"
   cp "${REPO_ROOT}/claude-sync.sh" "${FIRST_REPO}/claude-sync.sh"
+  mkdir -p "${FIRST_REPO}/legacy"
+  cp "${REPO_ROOT}"/legacy/*.sh "${FIRST_REPO}/legacy/"
   cp "${REPO_ROOT}"/lib/*.sh "${FIRST_REPO}/lib/"
   chmod +x "${FIRST_REPO}/claude-sync.sh"
   touch "${FIRST_REPO}/machines/.gitkeep" "${FIRST_REPO}/dot-claude/agents/.gitkeep" \

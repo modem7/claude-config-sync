@@ -4,6 +4,10 @@
 LIB_DIR="$(cd "${BATS_TEST_DIRNAME}/../lib" && pwd)"
 REPO_ROOT="$(cd "${BATS_TEST_DIRNAME}/.." && pwd)"
 
+# claude-sync.sh and install.sh are shims to the Python port; the bats suite
+# tests the bash implementation they keep in legacy/ (tests/py tests the port).
+export CLAUDE_SYNC_IMPL=bash
+
 # CI runners have no global git identity, and claude-sync.sh commits in fresh
 # clones. Give every test a fixed one so results do not depend on the host.
 export GIT_AUTHOR_NAME="test" GIT_AUTHOR_EMAIL="test@example.invalid"

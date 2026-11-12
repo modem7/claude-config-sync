@@ -814,3 +814,8 @@ jspm_packages/**  binary
 packages/**       -text -diff
 .yarn/**          binary
 .pnp.*            binary
+
+## Synced config: keep exact bytes (last, so these win over the rules above)
+dot-claude/**     -text
+dot-agents/**     -text
+memory/**         -text

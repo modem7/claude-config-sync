@@ -60,3 +60,13 @@ target/
 # Logs & Temp
 # ========================
 *.log
+
+# ========================
+# Python
+# ========================
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# claude-sync's in-flight temp files (left only by a killed run)
+*.claude-sync-tmp

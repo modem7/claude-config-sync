@@ -12,5 +12,5 @@
 
 ## Checklist
 
-- [ ] Tested locally
+- [ ] Tested locally: `python -m pytest tests/py` and `bats tests` pass
 - [ ] Documentation updated (if needed)
