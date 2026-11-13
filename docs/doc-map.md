@@ -15,6 +15,7 @@ Which doc to update for each kind of change. Read it before opening a PR, then r
 | `docs/runbook.md` | Step-by-step procedures. |
 | `docs/agents.md` | Reference for the shared agents. |
 | `docs/python-port.md` | The Python entry points and shims, `CLAUDE_SYNC_IMPL=bash`, and the deliberate differences from the bash. |
+| `docs/windows-manual-test.md` | Steps to run by hand on a Windows machine for the Windows-only code paths CI does not cover, and what CI does and does not show. |
 | `docs/superpowers/` | Dated design specs and plans. A record: add a note if superseded, do not rewrite. |
 | `dot-claude/CLAUDE.md` | Global instructions synced to every machine. |
 | `machines/<profile>/NOTES.md` | Private notes for one machine profile. Never published. |
@@ -33,6 +34,7 @@ Which doc to update for each kind of change. Read it before opening a PR, then r
 | Change what is synced (`claude_sync/syncfiles.py`) | The synced-paths table in both READMEs, `docs/risks.md`, `docs/runbook.md`. |
 | Change profiles or overrides | The profile sections of both READMEs, `docs/runbook.md`, "How it works" in `CLAUDE.md`. |
 | Change what is published | `PATHS` in `claude_sync/publish.py` and `publish-public.sh` and the trigger paths in `.github/workflows/publish-public.yml` (in lockstep), the "never published" notes in both READMEs, the publish section of `docs/runbook.md`, `CLAUDE.md` rules, `docs/risks.md`. |
+| Change a Windows-only code path (lock, links and junctions, read-only handling, `.cmd` shims, drive-letter paths) | `docs/windows-manual-test.md`, the Windows checklist in `docs/python-port.md`, `docs/risks.md`. |
 | Differ from the bash on purpose | `docs/python-port.md`, and the docs above for the kind of change. |
 | Find a new failure mode or add a guard | A row in `docs/risks.md` with the guard and the test name. |
 | Change a global instruction | `dot-claude/CLAUDE.md` and the live `~/.claude/CLAUDE.md`, which must stay identical. |

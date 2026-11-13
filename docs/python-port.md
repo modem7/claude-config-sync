@@ -98,6 +98,8 @@ The Windows job is the only place these run. Before the cutover, check it covers
 - The memory folder for a project path with spaces (`C:\Users\John Smith\project` gives `C--Users-John-Smith-project`).
 - Uppercase and non-ASCII hostnames: an uppercase one is kept as is, a non-ASCII one is refused with `Not a valid hostname`.
 
+Most checklist items that CI does not cover are run by hand with `docs/windows-manual-test.md`. It lists `install.cmd --repair` and the `python` fallback of the `.cmd` shims as out of scope.
+
 ## Open questions
 
-- The Windows CI job is the only place the Windows branches run (lock, links and junctions, read-only removal, signals, `.cmd` shims).
+- The Windows CI job, and `docs/windows-manual-test.md` by hand, are the only places the Windows branches run (lock, links and junctions, read-only removal, signals, `.cmd` shims). Several of them (the shims, Ctrl-C, junction following, the exec bit) are not run in CI.
