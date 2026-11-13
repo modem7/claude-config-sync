@@ -1,7 +1,7 @@
 """Discovery links from <claude_home>/skills/<name> to <agents_home>/skills/<name>.
 
 Claude Code discovers skills under ~/.claude/skills, but only ~/.agents/skills
-is tracked. Python twin of lib/skills-symlink.sh. As there, the tracked set
+is tracked. As there, the tracked set
 is the skill folders in the repo's dot-agents/skills plus the machine
 profile's skills/, minus the names the profile disables (tracked_skills);
 a folder that is only in <agents_home>/skills gets no link. Links are symlinks on POSIX and directory

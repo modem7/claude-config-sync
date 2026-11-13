@@ -1,4 +1,4 @@
-"""publish: the Python twin of publish-public.sh (the public mirror export).
+"""publish: the public mirror export.
 
 Every test publishes to a local bare repo named by CLAUDE_CONFIG_PUBLIC_REPO_URL;
 nothing is ever pushed anywhere else.
@@ -41,7 +41,7 @@ SOURCE_FILES = {
     ".gitignore": b"*.tmp\n",
     "docs/guide.md": b"line one\r\nline two\r\n",  # CRLF must survive
     "docs/tool.bat": b"@echo off\r\n",
-    "lib/common.sh": b"helper() { :; }\n",
+    "tests/common.sh": b"helper() { :; }\n",
     "tests/test_x.bats": b"@test x { :; }\n",
     "dot-claude/CLAUDE.md": b"# Global\n",
     "dot-claude/settings.json": b"{}\n",
@@ -71,8 +71,7 @@ SOURCE_FILES = {
     "private/notes.md": b"private\n",
     "weekly-review/run.py": b"print(1)\n",
     "dot-claude/projects/x.json": b"{}\n",
-    "publish-public.sh": b"#!/usr/bin/env bash\n",
-}
+    }
 
 
 EXECUTABLE = ("install.sh", "claude-sync.sh", "dot-claude/hooks/hook.sh")
@@ -195,7 +194,7 @@ def test_export_never_contains_personal_paths(world):
 
 @pytest.mark.parametrize(
     "rel",
-    ["docs/.credentials.json", "lib/.claude.json", "docs/machines/host-a.settings.json"],
+    ["docs/.credentials.json", "tests/.claude.json", "docs/machines/host-a.settings.json"],
 )
 def test_export_aborts_on_denylisted_file(world, capsys, rel):
     source, public, temp_root, env = world
@@ -224,7 +223,7 @@ def test_ignored_files_under_whitelisted_paths_are_not_exported(world, tmp_path)
         "tests/__pycache__/x.cpython-312.pyc": str(tmp_path).encode() + b"/home-path-in-pyc",
         "tests/py/__pycache__/y.pyc": b"cache",
         "docs/.env": b"TOKEN=abc\n",
-        "lib/key.pem": b"-----BEGIN PRIVATE KEY-----\n",
+        "tests/key.pem": b"-----BEGIN PRIVATE KEY-----\n",
         "dot-claude/hooks/secrets/api.txt": b"secret\n",
     }
     # Ignored only by the source clone's own exclude file (as a global
@@ -249,14 +248,14 @@ def test_symlinks_are_not_exported(world, tmp_path, capsys):
     (outside / "secret.txt").write_bytes(b"outside secret\n")
     try:
         os.symlink(outside / "secret.txt", source / "docs" / "leak.md")
-        os.symlink(outside, source / "lib" / "leakdir", target_is_directory=True)
+        os.symlink(outside, source / "tests" / "leakdir", target_is_directory=True)
     except OSError:
         pytest.skip("symlinks are not available here")
     _git(source, "add", "-A")
     _git(source, "commit", "-q", "-m", "links")
     assert publish.publish(source, env) == 0
     tree = _pushed(public)
-    assert not any(p.startswith(("docs/leak.md", "lib/leakdir")) for p in tree)
+    assert not any(p.startswith(("docs/leak.md", "tests/leakdir")) for p in tree)
     assert all(mode != "120000" for mode, _ in tree.values())
     grep = run(["git", "-C", str(public), "grep", "-I", "-e", "outside secret", "main"])
     assert grep.returncode == 1

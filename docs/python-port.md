@@ -13,17 +13,13 @@ The sync tool and the installer are now Python (`claude_sync/`, standard library
 | `python3 -m claude_sync.publish` | the public mirror export (the publish workflow runs it) |
 
 - The `.sh` shims put the clone first on `PYTHONPATH` (keeping any existing value after it) and change to the clone folder before they start Python, so the package always imports from the clone. Give `--project-path` as an absolute path: a relative one is read from the clone folder.
-- Without `python3` on `PATH`, the `.sh` shims print `claude-sync: needs python3 (3.12+); or set CLAUDE_SYNC_IMPL=bash` and exit 1. With a Python older than 3.12 the tool prints `claude-sync needs Python 3.12 or newer.` and exits 1.
+- Without `python3` on `PATH`, the `.sh` shims print `claude-sync: needs python3 (3.12+)` and exit 1. With a Python older than 3.12 the tool prints `claude-sync needs Python 3.12 or newer.` and exits 1.
 - The `.cmd` shims use `PYTHONPATH` and leave the working folder alone, because Windows cannot delete a folder that a running shell is using, and `--repair` deletes the clone. For the same reason, run `install.cmd --repair` from a prompt outside the clone: the installer cannot move the prompt that started it.
 - Every argument is passed through unchanged. The hooks still call `~/claude-config/claude-sync.sh`, so they run the Python with no change.
 
-### Running the old bash
-
-`CLAUDE_SYNC_IMPL=bash` makes both `.sh` shims run the old scripts, kept in `legacy/claude-sync.sh` and `legacy/install.sh` until phase 3 of the port. They still use `lib/*.sh`, `rsync`, `flock` and `jq`. The bats suite sets `CLAUDE_SYNC_IMPL=bash` in `tests/test_helper.bash`, so `bats tests` tests the bash, and `python -m pytest tests/py` tests the Python. There is no bash fallback on Windows.
-
 ## What changed for users
 
-- **`CLAUDE_SYNC_FLOCK` is dropped.** The Python locks `.git/claude-sync.flock` itself (`fcntl.flock` on Linux and macOS, `msvcrt.locking` on Windows), so there is no `flock` binary to pick and no weaker pid-link lock. The file name is the same as the bash one, so a bash run and a Python run still keep each other out during the switch-over. Only the legacy bash still reads `CLAUDE_SYNC_FLOCK`.
+- **`CLAUDE_SYNC_FLOCK` is dropped.** The Python locks `.git/claude-sync.flock` itself (`fcntl.flock` on Linux and macOS, `msvcrt.locking` on Windows), so there is no `flock` binary to pick and no weaker pid-link lock. The file name is the same as the bash one.
 - **`CLAUDE_SYNC_LOCK_WAIT` is checked.** A value that is not a finite number of seconds, 0 or more, fails with `CLAUDE_SYNC_LOCK_WAIT must be a number of seconds, not '<value>'.`. Blank or unset still means 10. It is read once at the start of every command, so a bad value also stops `doctor` and `profile list`, where the bash only read it when taking the lock.
 - **The usage text** says `Needs git 2.40+. A second run waits CLAUDE_SYNC_LOCK_WAIT seconds (default 10) for the first.` in place of the two flock lines.
 - **`install.sh --project-path PATH`** (or `--project-path=PATH`) sets the primary project path without the prompt. The usage line is `Usage: install.sh [--repair|--reinstall] [--profile NAME] [--project-path PATH]`.
@@ -73,7 +69,7 @@ The bash is the baseline: anything not listed here behaves the same.
 ### publish
 
 - It also refuses a `.credentials.json` or `.claude.json` anywhere in the public tree, skips links (with a warning) instead of copying them, and exports only files committed at `HEAD`, never ignored or untracked ones.
-- Each published file keeps the mode it has at `HEAD`, set in the mirror's index, not read from disk. So publishing from Windows (no executable bit, `core.filemode=false`) keeps `100755` scripts executable. The bash took the mode from the copied file; `publish-public.sh` now sets HEAD's modes in its index too, so both agree.
+- Each published file keeps the mode it has at `HEAD`, set in the mirror's index, not read from disk. So publishing from Windows (no executable bit, `core.filemode=false`) keeps `100755` scripts executable. The bash took the mode from the copied file.
 - It has no built-in public repo URL: set `CLAUDE_CONFIG_PUBLIC_REPO_URL` (the workflow does). The commit message names the source repo from `GITHUB_REPOSITORY`, else `origin`, else the folder name.
 
 ## Line endings

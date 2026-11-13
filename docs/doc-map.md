@@ -14,7 +14,7 @@ Which doc to update for each kind of change. Read it before opening a PR, then r
 | `docs/risks.md` | Failure modes, each with its guard and test. |
 | `docs/runbook.md` | Step-by-step procedures. |
 | `docs/agents.md` | Reference for the shared agents. |
-| `docs/python-port.md` | The Python entry points and shims, `CLAUDE_SYNC_IMPL=bash`, and the deliberate differences from the bash. |
+| `docs/python-port.md` | The Python entry points and shims, and a record of the deliberate differences from the old bash. |
 | `docs/windows-manual-test.md` | Steps to run by hand on a Windows machine for the Windows-only code paths CI does not cover, and what CI does and does not show. |
 | `docs/superpowers/` | Dated design specs and plans. A record: add a note if superseded, do not rewrite. |
 | `dot-claude/CLAUDE.md` | Global instructions synced to every machine. |
@@ -28,12 +28,12 @@ Which doc to update for each kind of change. Read it before opening a PR, then r
 |---|---|
 | Add, remove, rename or change a shared agent | `docs/agents.md` (row and note), the agents paragraph in `README.public.md`, the list in `dot-claude/CLAUDE.md`. |
 | Add, remove or change a profile agent | The profile's `NOTES.md`. If it overrides a shared agent, diff the two. |
-| Add or remove a skill | The skills paragraph in `README.public.md`, the profile `NOTES.md` for profile skills, and the whitelist in `claude_sync/publish.py` and `publish-public.sh`. |
+| Add or remove a skill | The skills paragraph in `README.public.md`, the profile `NOTES.md` for profile skills, and the whitelist in `claude_sync/publish.py`. |
 | Add or change a command, flag or env var | Usage text (`USAGE` in `claude_sync/cli.py` and `claude_sync/install.py`), the installer messages, the usage sections of both READMEs, `docs/runbook.md`, `docs/risks.md`, and the tests. |
 | Change sync flow, branches, env vars or failure messages | `USAGE` in `claude_sync/cli.py`, the installer messages in `claude_sync/install.py`, both READMEs, `CLAUDE.md` "How it works" and Rules, `docs/runbook.md`, `docs/risks.md`, the tests, and a superseded note on the affected spec. |
 | Change what is synced (`claude_sync/syncfiles.py`) | The synced-paths table in both READMEs, `docs/risks.md`, `docs/runbook.md`. |
 | Change profiles or overrides | The profile sections of both READMEs, `docs/runbook.md`, "How it works" in `CLAUDE.md`. |
-| Change what is published | `PATHS` in `claude_sync/publish.py` and `publish-public.sh` and the trigger paths in `.github/workflows/publish-public.yml` (in lockstep), the "never published" notes in both READMEs, the publish section of `docs/runbook.md`, `CLAUDE.md` rules, `docs/risks.md`. |
+| Change what is published | `PATHS` in `claude_sync/publish.py` and the trigger paths in `.github/workflows/publish-public.yml` (in lockstep), the "never published" notes in both READMEs, the publish section of `docs/runbook.md`, `CLAUDE.md` rules, `docs/risks.md`. |
 | Change a Windows-only code path (lock, links and junctions, read-only handling, `.cmd` shims, drive-letter paths) | `docs/windows-manual-test.md`, the Windows checklist in `docs/python-port.md`, `docs/risks.md`. |
 | Differ from the bash on purpose | `docs/python-port.md`, and the docs above for the kind of change. |
 | Find a new failure mode or add a guard | A row in `docs/risks.md` with the guard and the test name. |
@@ -48,5 +48,4 @@ Which doc to update for each kind of change. Read it before opening a PR, then r
 - `dot-claude/CLAUDE.md` and `~/.claude/CLAUDE.md`.
 - A profile agent and the shared agent it overrides.
 - Each agent file and its row in `docs/agents.md`.
-- `PATHS` in `claude_sync/publish.py`, `PATHS` in `publish-public.sh` and the trigger paths in `.github/workflows/publish-public.yml`.
-- The bash in `legacy/` and the Python in `claude_sync/`, until phase 3 removes the bash.
+- `PATHS` in `claude_sync/publish.py` and the trigger paths in `.github/workflows/publish-public.yml`.

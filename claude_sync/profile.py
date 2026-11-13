@@ -1,4 +1,4 @@
-"""Per-machine profiles: the Python port of lib/profile.sh.
+"""Per-machine profiles.
 
 A profile lets one machine differ from the shared config in agents, hooks,
 skills and CLAUDE.md without changing the shared files:

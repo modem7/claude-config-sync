@@ -64,9 +64,8 @@ directory unless it differs.
 claude_sync.install`) from the clone, passing every argument through. Run
 the installer with the system Python, not a venv: its pip step installs into
 whichever Python runs it. `install.sh --project-path /absolute/path` skips
-the project path prompt. `CLAUDE_SYNC_IMPL=bash` runs the old bash scripts,
-kept in `legacy/` until the port is finished. What differs from the bash,
-and why, is in `docs/python-port.md`.
+the project path prompt. The Python port replaced the old bash scripts;
+`docs/python-port.md` records how it differs from them.
 
 `push`/`sync`/`bootstrap` skip (without committing anything) if this clone
 isn't currently on its default branch — e.g. if you're using this same
@@ -403,7 +402,7 @@ for the implementation plan.
 ## Getting updates to this tool
 
 This repo is a published mirror of the tool code (`install.sh`,
-`claude-sync.sh`, `claude_sync/`, hooks, `lib/`, `tests/`) from its maintainer's private
+`claude-sync.sh`, `claude_sync/`, hooks, `tests/`) from its maintainer's private
 sync repo, with personal and private directories left out. It isn't
 pushed to directly. To pick up updates: `git pull` this repo's default
 branch into your own clone, then re-run `install.sh`/`claude-sync.sh sync`

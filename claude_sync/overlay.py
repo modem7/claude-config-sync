@@ -1,4 +1,4 @@
-"""Per-machine settings overrides. Port of lib/settings-overlay.sh.
+"""Per-machine settings overrides.
 
 dot-claude/settings.json is shared by every machine. A machine can layer
 machines/<name>.settings.json on top of it:

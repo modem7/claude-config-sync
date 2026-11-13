@@ -1,4 +1,4 @@
-"""Export the generic tool into the public mirror repo. Port of publish-public.sh.
+"""Export the generic tool into the public mirror repo.
 
 Only the PATHS whitelist (plus README.public.md as README.md) is copied;
 machines/, memory/, private/ and weekly-review/ are never published. Links
@@ -31,13 +31,13 @@ from claude_sync import safety
 from claude_sync.syncfiles import _remove
 from claude_sync.util import Fail, redact, run
 
-# Whitelisted paths to publish; keep in step with PATHS in publish-public.sh
-# and the trigger paths in .github/workflows/publish-public.yml.
+# Whitelisted paths to publish; keep in step with the trigger paths in
+# .github/workflows/publish-public.yml.
 PATHS = (
     "install.sh", "claude-sync.sh", "npm-tools.sh", "gh-tools.sh", "python-tools.sh",
-    "install.cmd", "claude-sync.cmd", "legacy", "claude_sync", "pytest.ini",
+    "install.cmd", "claude-sync.cmd", "claude_sync", "pytest.ini",
     "CONTRIBUTING.md", "CLAUDE.md", "AGENTS.md", "LICENSE", ".gitattributes", ".gitignore",
-    ".editorconfig", ".wakatime-project", "renovate.json", ".github", "docs", "lib", "tests",
+    ".editorconfig", ".wakatime-project", "renovate.json", ".github", "docs", "tests",
     "dot-claude/CLAUDE.md", "dot-claude/settings.json", "dot-claude/hooks", "dot-claude/agents",
     "dot-agents",
 )

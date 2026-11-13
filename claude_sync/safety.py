@@ -1,6 +1,6 @@
 """Guards against committing secrets and against publishing personal content.
 
-Python twin of lib/safety.sh. Walks never follow symlinks.
+Walks never follow symlinks.
 """
 
 from __future__ import annotations

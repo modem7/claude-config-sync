@@ -1,10 +1,8 @@
 """Resolves the memory directory Claude Code uses for a working directory.
 
-Port of lib/memory-path.sh. Claude Code names a project's folder after its
+Claude Code names a project's folder after its
 cwd with every character other than A-Z, a-z and 0-9 turned into a dash,
 so separators, a drive colon, spaces, dots and underscores all become `-`.
-The legacy bash only replaced `/`, so it differs for paths with any other
-such character.
 
 Claude Code also shortens a very long folder name and adds a hash. That
 rule is not reproduced here, so long_name_warning flags a name over

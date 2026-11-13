@@ -86,13 +86,13 @@ A real content conflict is reported, not guessed at: this machine's pending chan
 
 "… is a hook script tracked without the exec bit": a hook was committed as `100644`, usually from Windows, so Linux and macOS get it non-executable. On Windows run `git -C ~/claude-config update-index --chmod=+x -- <path>`; on Linux or macOS run `chmod +x` on the file in `~/claude-config` and on its live copy under `~/.claude/hooks/`, if there is one. Then run `claude-sync.sh sync` and merge its PR.
 
-"another claude-sync run is still working": another session's sync holds the lock. Wait and re-run. The lock frees itself when that run exits. `CLAUDE_SYNC_LOCK_WAIT=<seconds>` waits longer; it must be a number of seconds, 0 or more. Only the legacy bash without `flock` uses a `.git/claude-sync.lockpid` link: remove it once no `claude-sync.sh` is running.
+"another claude-sync run is still working": another session's sync holds the lock. Wait and re-run. The lock frees itself when that run exits. `CLAUDE_SYNC_LOCK_WAIT=<seconds>` waits longer; it must be a number of seconds, 0 or more.
 
 "the last applied commit ... is no longer in": the stamp in `~/.claude/.claude-sync-applied-commit` points at a commit the clone lost (re-cloned or garbage-collected; it is pinned as `refs/claude-sync/applied` now). Either `pull` (discards local edits), or copy your edits aside, delete the stamp and run `sync`.
 
 "warning: the project path … may not be the folder Claude Code uses": the memory folder name for `PRIMARY_PROJECT_PATH` in `machines/<hostname>.conf` is over 200 characters. Claude Code shortens such names and adds a hash, so the synced `memory/` may come from a folder it no longer writes. Point the conf at a shorter project path (or `install.sh --repair --project-path <shorter>`) and check the next sync PR's `memory/` diff.
 
-"Unable to create '….lock': File exists" (for example `.git/index.lock` or `.git/refs/remotes/origin/<branch>.lock`): a run stopped while git was writing left git's own lock behind. Since a SIGTERM, SIGHUP or Ctrl-C now lets git finish first (`docs/risks.md` row 35), this is mostly after a power loss, a SIGKILL, the Windows hook timeout, or a run of the legacy bash. Once no `claude-sync` and no other git command is running in the clone, delete that `.lock` file and re-run.
+"Unable to create '….lock': File exists" (for example `.git/index.lock` or `.git/refs/remotes/origin/<branch>.lock`): a run stopped while git was writing left git's own lock behind. Since a SIGTERM, SIGHUP or Ctrl-C now lets git finish first (`docs/risks.md` row 35), this is mostly after a power loss, a SIGKILL, or the Windows hook timeout. Once no `claude-sync` and no other git command is running in the clone, delete that `.lock` file and re-run.
 
 "sync SKIPPED": the clone is on a branch other than its default branch, so nothing was captured. Switch it back (`git -C ~/claude-config switch <default>`), or develop in a separate worktree.
 
@@ -110,33 +110,23 @@ On Windows, run `install.cmd --repair` from a prompt whose folder is outside the
 
 ## Publish the public mirror by hand
 
-Commit first; the script refuses on a dirty tree.
+Commit first; the tool refuses on a dirty tree.
 
 ```bash
-~/claude-config/publish-public.sh
+cd ~/claude-config && python3 -m claude_sync.publish
 ```
 
-The Python port, which the publish workflow runs, needs the public repo's URL set (it has no built-in default):
+The publish workflow runs the same command. It needs the public repo's URL set (it has no built-in default):
 
 ```bash
 cd ~/claude-config && CLAUDE_CONFIG_PUBLIC_REPO_URL=git@github.com:<owner>/<repo>.git python3 -m claude_sync.publish
 ```
 
-It aborts if `machines/`, `memory/`, `private/` or `weekly-review/` ended up in the generated tree. The Python port also aborts on a `.credentials.json` or `.claude.json` anywhere in it, skips links instead of copying them, and exports only files committed at `HEAD`. The bash script copies the working tree, ignored files included, so prefer the Python port.
+It aborts if `machines/`, `memory/`, `private/` or `weekly-review/` ended up in the generated tree. It also aborts on a `.credentials.json` or `.claude.json` anywhere in it, skips links instead of copying them, and exports only files committed at `HEAD`.
 
-Published files keep the mode they have at HEAD, also when it is run on Windows (`_keep_modes` in the Python; the bash twin does the same after its `git add -A`).
+Published files keep the mode they have at HEAD, also when it is run on Windows (`_keep_modes` in `claude_sync/publish.py`).
 
-The whitelist (`PATHS` in `claude_sync/publish.py` and `publish-public.sh`) includes the `claude_sync/` package, `pytest.ini`, the `.cmd` shims and `legacy/`, so the mirror can run and test the Python. Keep the trigger paths in `.github/workflows/publish-public.yml` in step with it; `test_workflow_triggers_match_whitelist` checks.
-
-## Run the old bash implementation
-
-`claude-sync.sh` and `install.sh` run the Python port. To run the bash scripts kept in `legacy/` instead (Linux and macOS only, until phase 3):
-
-```bash
-CLAUDE_SYNC_IMPL=bash ~/claude-config/claude-sync.sh sync
-```
-
-To keep the hooks on the bash too, set `CLAUDE_SYNC_IMPL=bash` in the environment Claude Code runs them in (for example the shell profile that starts `claude`, or `env` in that machine's settings override). `bats tests` always runs the bash; `python -m pytest tests/py` runs the Python.
+The whitelist (`PATHS` in `claude_sync/publish.py`) includes the `claude_sync/` package, `pytest.ini` and the `.cmd` shims, so the mirror can run and test the Python. Keep the trigger paths in `.github/workflows/publish-public.yml` in step with it; `test_workflow_triggers_match_whitelist` checks.
 
 ## Re-check out a Windows clone after a line-ending change
 
@@ -150,20 +140,13 @@ git -C %USERPROFILE%\claude-config reset -q --hard
 
 Or run `install.cmd --repair`, which clones afresh with `-c core.autocrlf=false`. Since `.gitattributes` unsets `text` for `dot-claude/`, `dot-agents/` and `memory/`, git no longer rewrites those files. Re-checking out the clone does not change the live copies: a file that is CRLF in `~/.claude` only because an old clone wrote it that way goes into the next sync's PR as a line-ending-only change, since capture runs first. Before that sync, convert such live files back to LF by hand, or drop the line-ending change from the PR (see `docs/python-port.md`, "Line endings").
 
-## Cutover gate (owner, before merging the switch to Python)
+## Checks for each machine
 
-The hooks call `~/claude-config/claude-sync.sh`, so once the PR that makes it a Python shim is merged, every machine runs the Python on its next sync. Do this first, by hand:
+The hooks call `~/claude-config/claude-sync.sh`, a shim that runs the Python. On every machine, check:
 
-- [ ] On every machine, check `python3 --version` is 3.12 or newer, in the shell the hooks run in (on Windows, Git Bash), not only in your own. `command -v python3` is not enough: the Windows Store stub is found on `PATH` but exits 9009 without running anything. Debian 12 ships 3.11, Ubuntu 22.04 3.10 and stock macOS 3.9; on those, every hook sync fails after the merge until a newer Python is installed. Keep such a machine on the bash (next step) until it has one.
-- [ ] On every machine, check the hostname (or `CLAUDE_SYNC_HOSTNAME`, if set) uses only letters, digits, `.`, `_` and `-`. The Python checks it on every command, the bash did not, so otherwise every hook sync fails with `Not a valid hostname` once the switch is merged.
-- [ ] Before merging, set `CLAUDE_SYNC_IMPL=bash` on every machine that should stay on the bash for now (or all of them, to switch over one by one). Set it where the hooks get their environment. If you set it through `env` in a machine's settings override, that override must already be merged and applied on the machine, and Claude Code restarted, before the switch is merged.
-- [ ] On a test machine, make two identical starting states, each with its own throwaway clone, origin and HOME (`HOME`, `CLAUDE_SYNC_CLAUDE_HOME` and `CLAUDE_SYNC_AGENTS_HOME` pointing at copies, the same `CLAUDE_SYNC_HOSTNAME`, a fake `CLAUDE_SYNC_GH`). Never use the real HOME.
-- [ ] Run this gate on at least one machine that has a settings override (`machines/<hostname>.settings.json`) and one that has a profile (`machines/<profile>/`), not only a plain machine: those paths differ most between the two implementations.
-- [ ] Run each clone's own `claude-sync.sh sync`: the first with `CLAUDE_SYNC_IMPL=bash`, the second without.
-- [ ] Diff the two `~/.claude` (and `~/.agents`) trees, and the trees of the pushed `sync/<hostname>` commits (`git diff --stat <bash-tip> <python-tip>`, then `git diff` if anything shows). They must match, except `memory/` on a machine whose project path has a space, `.`, `_` or a drive letter: the Python uses Claude Code's folder name there and the bash does not (`docs/risks.md` row 28). On such a machine, check the `memory/` diff of its first Python sync PR before merging it; it can delete repo memory files. A Windows conf the bash wrote in the Git Bash form (`/z/...`) still works and need not be edited: the Python reads it as `Z:\...`, so it uses the `Z--...` folder Claude Code writes, not the bash's `-z-...`.
-- [ ] Run `claude-sync.sh doctor` once on the Python side. A hook committed from Windows shows as "tracked without the exec bit"; fix each as the hint says (see "A sync seems stuck") and merge that PR first. The bash doctor does not check this.
+- [ ] On every machine, check `python3 --version` is 3.12 or newer, in the shell the hooks run in (on Windows, Git Bash), not only in your own. `command -v python3` is not enough: the Windows Store stub is found on `PATH` but exits 9009 without running anything. Debian 12 ships 3.11, Ubuntu 22.04 3.10 and stock macOS 3.9; on those, every hook sync fails until a newer Python is installed.
+- [ ] On every machine, check the hostname (or `CLAUDE_SYNC_HOSTNAME`, if set) uses only letters, digits, `.`, `_` and `-`. The Python checks it on every command, so otherwise every hook sync fails with `Not a valid hostname`.
+- [ ] Run `claude-sync.sh doctor` once. A hook committed from Windows shows as "tracked without the exec bit"; fix each as the hint says (see "A sync seems stuck") and merge that PR first.
 - [ ] Check the Windows CI job is green, and walk the Windows checklist in `docs/python-port.md`, then run `docs/windows-manual-test.md`.
-- [ ] Only then merge. Switch machines over by removing `CLAUDE_SYNC_IMPL=bash` one at a time, and check each one's next sync in `~/.claude/claude-config-sync.log`.
-- [ ] Switch a machine over only while no Claude Code session is running on it. The Python and the bash share the lock only when the bash uses util-linux `flock`; with its pid-link fallback, or Git Bash's `flock`, a bash hook and a Python hook can run at once.
 - [ ] On Windows, after the first Python sync, delete once any real folders under `~/.claude/skills` that Git Bash's `ln -sfn` left as copies of `~/.agents/skills/<name>`. The Python only replaces links and junctions there, never a real folder, so those copies would stay stale.
 - [ ] Know that on Windows the hook timeout kills Python outright, with no handler run. Recover as after a power loss: run `claude-sync.sh doctor`, and remove a stale git `.lock` file as in "A sync seems stuck".

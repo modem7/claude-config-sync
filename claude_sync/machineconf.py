@@ -1,6 +1,6 @@
 """Reads and writes the per-machine config file (machines/<hostname>.conf).
 
-Port of lib/machine-conf.sh. The file maps a hostname to the local project
+The file maps a hostname to the local project
 whose memory dir is synced, and optionally to the machine profile it follows.
 Files are handled as bytes so lines this code does not know survive intact.
 

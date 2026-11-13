@@ -1,6 +1,5 @@
 """The entry-point shims: claude-sync.sh / install.sh run the Python port
-(or, with CLAUDE_SYNC_IMPL=bash, the old bash scripts kept in legacy/), and
-the Windows .cmd shims find Python with `py -3` first, then `python`."""
+and the Windows .cmd shims find Python with `py -3` first, then `python`."""
 
 from __future__ import annotations
 
@@ -18,13 +17,11 @@ posix_only = pytest.mark.skipif(os.name == "nt", reason="the .sh shims need bash
 
 
 def _clone_tool(dst: Path) -> Path:
-    """A throwaway copy of the tool (shims, legacy/, lib/, the package) in
+    """A throwaway copy of the tool (shims and the package) in
     its own git repo, so nothing runs against this checkout or the real HOME."""
     dst.mkdir()
     for name in ("claude-sync.sh", "install.sh"):
         shutil.copy2(REPO_ROOT / name, dst / name)
-    shutil.copytree(REPO_ROOT / "legacy", dst / "legacy")
-    shutil.copytree(REPO_ROOT / "lib", dst / "lib")
     shutil.copytree(REPO_ROOT / "claude_sync", dst / "claude_sync", ignore=shutil.ignore_patterns("__pycache__"))
     subprocess.run(["git", "init", "-q", str(dst)], check=True)
     return dst
@@ -68,22 +65,6 @@ def test_sh_install_shim_runs_python_installer(tmp_path):
     assert result.stderr == f"Unknown option: --bogus\n{install.USAGE}\n"
 
 
-@posix_only
-def test_sh_shim_with_impl_bash_runs_legacy_script(tmp_path):
-    tool = _clone_tool(tmp_path / "tool")
-    env = _env(tmp_path, CLAUDE_SYNC_IMPL="bash")
-    result = _run(["bash", str(tool / "claude-sync.sh"), "bogus"], tmp_path, env)
-    assert result.returncode == 1
-    # Only the bash usage still names the flock binary variable.
-    assert "CLAUDE_SYNC_FLOCK" in result.stderr
-    assert "CLAUDE_SYNC_FLOCK" not in cli.USAGE
-
-    result = _run(["bash", str(tool / "install.sh"), "--bogus"], tmp_path, env)
-    assert result.returncode == 1
-    assert "Unknown option: --bogus" in result.stderr
-    assert "--project-path" not in result.stderr  # the bash installer has no such flag
-
-
 def _cmd_lines(name: str) -> list[str]:
     text = (REPO_ROOT / name).read_text(encoding="utf-8")
     return [line.strip() for line in text.splitlines()]
@@ -105,16 +86,6 @@ def test_cmd_shim_uses_py_launcher_first(name, module):
     # after each command, and --repair replaces the clone that holds it.
     for i in py + python:
         assert "exit /b" in lines[i]
-
-
-def test_legacy_script_still_present():
-    for name in ("claude-sync.sh", "install.sh"):
-        legacy = REPO_ROOT / "legacy" / name
-        assert legacy.is_file()
-        shim = (REPO_ROOT / name).read_text(encoding="utf-8")
-        assert f"legacy/{name}" in shim
-        assert "CLAUDE_SYNC_IMPL" in shim
-    assert "flock" in (REPO_ROOT / "legacy" / "claude-sync.sh").read_text(encoding="utf-8")
 
 
 def _stub_python(tmp_path: Path, rc: int) -> Path:
@@ -158,4 +129,4 @@ def test_sh_shim_without_python3_says_what_to_do(tmp_path):
     for name in ("claude-sync.sh", "install.sh"):
         result = _run([shutil.which("bash"), str(tool / name), "sync"], tmp_path, env)
         assert result.returncode == 1
-        assert result.stderr == "claude-sync: needs python3 (3.12+); or set CLAUDE_SYNC_IMPL=bash\n"
+        assert result.stderr == "claude-sync: needs python3 (3.12+)\n"
