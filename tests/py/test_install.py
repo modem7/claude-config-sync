@@ -15,7 +15,7 @@ from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 
 import pytest
-from helpers import git, has_ref, rev
+from helpers import git, has_ref, make_dir_link, rev
 from test_subcommands import seeded  # noqa: F401 - the fixture
 
 from claude_sync import install, tools
@@ -338,12 +338,11 @@ def test_repair_refuses_a_folder_that_is_not_a_clone(world, tmp_path):
     assert (repo / "keep.txt").read_bytes() == b"precious\n"
 
 
-@pytest.mark.skipif(os.name == "nt", reason="symlink needs privileges on Windows")
 def test_repair_refuses_a_repo_dir_that_is_a_link(world, tmp_path):
     repo, claude, agents = fresh(tmp_path, "link")
     real = tmp_path / "real_clone"
     git("clone", "-q", "-c", "core.autocrlf=false", world.origin, real)
-    os.symlink(real, repo)
+    make_dir_link(repo, real)  # a junction on Windows
     rc, out = run_install(world, "host-x", repo, claude, agents, "--repair")
     assert rc == 1
     assert "is a link" in out

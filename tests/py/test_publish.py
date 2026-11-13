@@ -366,6 +366,8 @@ def test_workflow_triggers_match_whitelist():
     on nothing else (so sync PRs that touch only memory/ or machines/ never
     publish). Directories trigger as <dir>/**."""
     workflow = REPO_ROOT / ".github" / "workflows" / "publish-public.yml"
+    if not workflow.is_file():
+        pytest.skip("publish-public.yml is not part of the public mirror")
     text = workflow.read_text(encoding="utf-8")
     block = re.search(r"^    paths:\n((?:      - .*\n)+)", text, re.M).group(1)
     triggers = [line.strip().removeprefix("- ") for line in block.splitlines()]

@@ -1,6 +1,6 @@
 # Windows manual test
 
-A hands-on check of the Windows-only code paths in `claude_sync/` that CI does not run. Run it on a real Windows machine (Python 3.12 or newer, git 2.40 or newer, `py` launcher) in a **non-elevated** PowerShell. It takes about 20 minutes.
+A hands-on check of the Windows-only code paths in `claude_sync/` that CI does not run. Run it on a real Windows machine (Python 3.12 or newer, git 2.40 or newer; the `py` launcher is recommended, see the note in Set-up) in a **non-elevated** PowerShell. It takes about 20 minutes.
 
 Nothing here touches your real profile. Every step uses a throwaway folder, a local bare repo as `origin`, a stub `gh`, and `USERPROFILE` pointed at the folder. Do not run `install.cmd` as part of this test: it runs `npm install -g` and writes into the real home.
 
@@ -62,6 +62,9 @@ git -C "$T\seed" -c user.name=t -c user.email=t@example.invalid commit -q -m see
 git -C "$T\seed" push -q origin HEAD:master
 git clone -q -c core.autocrlf=false "$T\origin.git" "$T\repo"
 
+# The Python to use (py launcher if present, else python).
+$py = if (Get-Command py -ErrorAction SilentlyContinue) { py -3 -c "import sys; print(sys.executable)" } else { (Get-Command python).Source }
+
 # A stub gh that records its calls (the real one is never used).
 W "$T\gh\gh_stub.py" @"
 import os, sys
@@ -73,7 +76,7 @@ elif a == ["pr", "list"] and "all" in sys.argv: print("nopr")
 elif a == ["pr", "list"]: pass
 else: sys.exit(1)
 "@
-W "$T\gh\gh.cmd" "@py -3 `"%~dp0gh_stub.py`" %*`r`n"
+W "$T\gh\gh.cmd" "@`"$py`" `"%~dp0gh_stub.py`" %*`r`n"
 
 # The environment every test uses. Re-run this block in any new window.
 $env:CLAUDE_SYNC_REPO_DIR = "$T\repo"
@@ -90,9 +93,9 @@ $env:USERPROFILE = "$T\home"; $env:HOME = "$T\home"
 $env:GIT_AUTHOR_NAME = "t"; $env:GIT_AUTHOR_EMAIL = "t@example.invalid"
 $env:GIT_COMMITTER_NAME = "t"; $env:GIT_COMMITTER_EMAIL = "t@example.invalid"
 $cs = "$T\repo\claude-sync.cmd"
-$py = (py -3 -c "import sys; print(sys.executable)")
-$py; py -3 --version        # Expect: a path, and Python 3.12 or newer
+$py; & $py --version        # Expect: a path, and Python 3.12 or newer
 ```
+No `py` launcher (for example Python from the Microsoft Store, or `py` not on PATH)? That is fine: `$py` falls back to `python`, and every later step uses `$py`. The `.cmd` shims do the same (`py -3`, else `python`). Only the "`py` is used before `python`" check in W1 needs the launcher; skip it and note that in the results table. If `python` is only the Store stub, install Python 3.12 or newer first.
 
 A live `~\.claude` for the test, with one local edit:
 
@@ -241,12 +244,12 @@ Expect: both pulls `exit=0` with no `PermissionError` or `Access is denied`; the
 
 These call the installer's own functions, so nothing is cloned or installed:
 ```powershell
-py -3 -c "from claude_sync.machineconf import windows_native_path as w; print(w('/z/projects'), w('z:/projects'), w('Z:\\projects'), w('/c/Users/x'))"
+& $py -c "from claude_sync.machineconf import windows_native_path as w; print(w('/z/projects'), w('z:/projects'), w('Z:\\projects'), w('/c/Users/x'))"
 ```
 Expect: `Z:\projects Z:\projects Z:\projects C:\Users\x`.
 
 ```powershell
-py -3 -c "from pathlib import Path; from claude_sync.install import resolve_project_path as r; print(r(r'Q:\projects', Path.home())); print(r(r'$env:TEMP', Path.home()))"
+& $py -c "from pathlib import Path; from claude_sync.install import resolve_project_path as r; print(r(r'Q:\projects', Path.home())); print(r(r'$env:TEMP', Path.home()))"
 ```
 Expect: first line is `$T\home` (no `Q:` drive, so the home folder, which here is the throwaway `USERPROFILE`), second line is your temp folder (it exists, so it is kept). On the real machine, run the same with `Z:\projects` in a fresh window **without** the `USERPROFILE` override: expect the real home folder when `Z:` is not mounted, and `Z:\projects` when it is (mapped drives are per logon session: an elevated window may not see `Z:`).
 
@@ -273,7 +276,7 @@ attrib -R "$T\claude\agents\a1.md"   # left read-only by W7
 [IO.File]::WriteAllText("$T\claude\CLAUDE.md", "one`r`ntwo`r`n", $utf8)
 [IO.File]::WriteAllText("$T\claude\agents\a1.md", "one`ntwo`n", $utf8)
 & $cs sync; "exit=$LASTEXITCODE"
-py -3 -c "import subprocess as s; g=lambda p: s.run(['git','-C',r'$T\origin.git','cat-file','blob','sync/host-win:'+p],capture_output=True).stdout; [print(p, d.count(b'\r\n'), d.count(b'\n')) for p,d in ((q,g(q)) for q in ('dot-claude/CLAUDE.md','dot-claude/agents/a1.md'))]"
+& $py -c "import subprocess as s; g=lambda p: s.run(['git','-C',r'$T\origin.git','cat-file','blob','sync/host-win:'+p],capture_output=True).stdout; [print(p, d.count(b'\r\n'), d.count(b'\n')) for p,d in ((q,g(q)) for q in ('dot-claude/CLAUDE.md','dot-claude/agents/a1.md'))]"
 ```
 Expect: `dot-claude/CLAUDE.md 2 2` (CRLF kept) and `dot-claude/agents/a1.md 0 2` (LF kept).
 

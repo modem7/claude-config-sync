@@ -6,6 +6,7 @@ the fake HOME the calling test set up (fake_home / git_repo fixtures).
 
 from __future__ import annotations
 
+import os
 import tempfile
 from collections.abc import Callable
 from pathlib import Path
@@ -85,3 +86,17 @@ def effective_show(repo: Path, host: str, path: str) -> str:
     if not has_ref(repo, f"refs/heads/{ref}"):
         ref = "HEAD"
     return git("-C", repo, "show", f"{ref}:{path}").stdout
+
+
+def make_dir_link(link: Path, target: Path) -> None:
+    """A folder link that needs no privilege on any OS: a junction on Windows
+    (`mklink /J`, what skilllinks.py makes), a symlink elsewhere. Tests built
+    on it run on both, so the `is_junction()` branches are exercised in the
+    Windows CI job, where a symlink test is skipped or needs admin rights."""
+    link, target = Path(link), Path(target)
+    if os.name == "nt":
+        import _winapi
+
+        _winapi.CreateJunction(str(target), str(link))
+    else:
+        link.symlink_to(target, target_is_directory=True)
