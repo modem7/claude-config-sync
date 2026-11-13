@@ -19,7 +19,7 @@ Different hostname, same behaviour as an existing machine (shared profile, edits
 ~/claude-config/install.sh --profile host-a
 ```
 
-`--project-path /absolute/path` sets the primary project path without the prompt. On Windows it is stored as `Z:\path`; a Git Bash `/z/path` is converted.
+`--project-path /absolute/path` sets the primary project path without the prompt. On Windows it is stored as `Z:\path`; a Git Bash `/z/path` is converted. If the folder does not exist, the installer asks whether to create it (terminal only); otherwise it falls back to the home folder.
 
 On Windows, clone with `-c core.autocrlf=false` and run the `.cmd` shim (it uses `py -3`, else `python`):
 

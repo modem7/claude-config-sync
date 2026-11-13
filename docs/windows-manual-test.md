@@ -253,7 +253,11 @@ Expect: `Z:\projects Z:\projects Z:\projects C:\Users\x`.
 ```
 Expect: first line is `$T\home` (no `Q:` drive, so the home folder, which here is the throwaway `USERPROFILE`), second line is your temp folder (it exists, so it is kept). On the real machine, run the same with `Z:\projects` in a fresh window **without** the `USERPROFILE` override: expect the real home folder when `Z:` is not mounted, and `Z:\projects` when it is (mapped drives are per logon session: an elevated window may not see `Z:`).
 
+The real installer also asks `The project path ... does not exist. Create it? [y/N]` before it falls back, but only on a terminal: answer `n` (or pipe the input) and the fallback message above appears; answer `y` and it prints `Created ...` and stores that path.
+
 Optional, in a window where `$env:USERPROFILE` is still the throwaway one: `--project-path` through the real installer prints `The project path Q:\projects does not exist; using your home folder ... instead.`, but the installer also runs `npm install -g`, so skip it unless you accept that.
+
+Also by hand, on a machine with a read-only Microsoft Store Python: `install.cmd` prints `Retrying with --user: the system-wide install was refused.` and pip then installs `mcp<2 aiosqlite pyyaml` into the user site. (CI cannot show this: it needs a read-only Python folder.)
 
 ## W9. Memory folder for a path with spaces
 

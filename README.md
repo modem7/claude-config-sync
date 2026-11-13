@@ -377,7 +377,8 @@ which:
 - runs `pip install --break-system-packages 'mcp<2' aiosqlite pyyaml` (the
   plugin's server uses the mcp 1.x API, which mcp 2.x removed) with the
   Python that runs the installer, as `python -I -m pip`. These are version
-  ranges, not hash-checked. On Windows the flag is left out, and the
+  ranges, not hash-checked. On Windows the flag is left out, and if pip
+  refuses the install it retries once with `--user`; the
   `python-is-python3` step only says what to do.
 
 Either step is skipped with a message if apt-get or python3 is missing.

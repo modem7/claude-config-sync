@@ -17,14 +17,17 @@ What these steps download, and what is verified:
   apk), which checks its own signatures. On Windows nothing is installed;
   the step says how to install gh.
 - pip: `<python> -I -m pip install mcp<2 aiosqlite pyyaml`, version ranges
-  from PyPI without hashes (no --require-hashes).
+  from PyPI without hashes (no --require-hashes). On Windows, if that is
+  refused, one retry with `-E -P -m pip install --user`.
 This module verifies no checksums itself, and runs nothing it downloads.
 Every command runs from an empty scratch folder, and pip in isolated mode
 (-I), so nothing in the caller's working folder is read or imported.
 
 Windows: the Linux package managers and the python-is-python3 step are
 skipped with a message saying what to do by hand; pip runs without
---break-system-packages (python.org installs are not externally managed).
+--break-system-packages (python.org installs are not externally managed),
+and a refused install is retried once with --user (a Store Python's folder
+is read-only).
 """
 
 from __future__ import annotations
@@ -149,8 +152,18 @@ def _ensure_pip_packages(python: str) -> None:
     flags = [] if IS_WINDOWS else ["--break-system-packages"]
     # -I: isolated mode, so neither the working folder nor PYTHON* variables
     # can put a planted module on sys.path ahead of pip.
-    if not _run([python, "-I", "-m", "pip", "install", *flags, *PIP_PACKAGES]):
-        _warn("Failed to install pip packages — continuing.")
+    if _run([python, "-I", "-m", "pip", "install", *flags, *PIP_PACKAGES]):
+        return
+    if IS_WINDOWS:
+        # A Python whose own folder is read-only (the Microsoft Store one lives
+        # under WindowsApps) cannot take a system-wide install. Retry into the
+        # user's site. pip refuses --user under -I (isolated mode turns the
+        # user site off), so use -E (ignore PYTHON* variables) and -P (no
+        # working folder on sys.path) instead: the same protection.
+        print("Retrying with --user: the system-wide install was refused.")
+        if _run([python, "-E", "-P", "-m", "pip", "install", "--user", *PIP_PACKAGES]):
+            return
+    _warn("Failed to install pip packages — continuing.")
 
 
 def install_python_tools(path: str | None = None, python: str | None = None) -> None:

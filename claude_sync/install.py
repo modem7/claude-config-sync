@@ -14,7 +14,8 @@ machines/NAME/: PROFILE=NAME goes into the new conf. --project-path PATH
 (else CLAUDE_SYNC_PROJECT_PATH, else a prompt that defaults to
 ~/project) is the project whose memory is synced. On Windows it is stored
 in the native drive form (`Z:\\projects`; a Git Bash `/z/projects` is
-converted), and a project path that does not exist falls back to the home
+converted), and a project path that does not exist is first offered for
+creation (a terminal asks `Create it? [y/N]`), then falls back to the home
 directory (resolve_project_path).
 That fallback is Windows-only on purpose: elsewhere the path is stored as
 given, as install.sh did, even when it does not exist yet.
@@ -279,6 +280,24 @@ def _check_project(value: str) -> None:
         )
 
 
+def _offer_to_create(path: str) -> None:
+    """On a terminal, offers to create a project folder that does not exist
+    yet, so the machine gets the path it asked for and not the home folder.
+    A refusal, no terminal, or a folder that cannot be made all leave it to
+    resolve_project_path, which falls back to the home folder."""
+    if not path or os.path.lexists(path) or not sys.stdin.isatty():
+        return
+    answer = _ask(f"The project path {printable(path)} does not exist. Create it? [y/N]: ")
+    if answer.strip().lower() not in ("y", "yes"):
+        return
+    try:
+        Path(path).mkdir(parents=True, exist_ok=True)
+    except OSError as err:
+        print(f"Could not create {printable(path)}: {printable(err.strerror or str(err))}")
+        return
+    print(f"Created {printable(path)}.")
+
+
 def _project_path(args: _Args, env: Mapping[str, str], home: Path) -> str:
     default = str(home / "project")
     chosen = args.project_path or env.get("CLAUDE_SYNC_PROJECT_PATH") or ""
@@ -289,6 +308,7 @@ def _project_path(args: _Args, env: Mapping[str, str], home: Path) -> str:
         # Stored in the native form; a Git Bash `/z/...` is converted first,
         # or is_dir() would look on the current drive.
         chosen = machineconf.windows_native_path(chosen)
+        _offer_to_create(chosen)
         resolved = resolve_project_path(chosen, home)
         if resolved != chosen:
             print(

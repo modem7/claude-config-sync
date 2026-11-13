@@ -205,6 +205,54 @@ def test_python_on_windows_pip_has_no_break_system_packages(fakebin, calls, monk
     assert "apt-get" not in log
 
 
+def _pip_that_refuses_the_system_install(fakebin: Path, calls: Path, name: str = "python3") -> Path:
+    """A python that fails under -I (the system-wide try) and works otherwise."""
+    prog = fakebin / name
+    prog.write_text(
+        f'#!/bin/sh\necho "{name} $*" >> "{calls}"\ncase " $* " in *" -I "*) exit 1;; esac\nexit 0\n',
+        encoding="utf-8",
+        newline="\n",
+    )
+    prog.chmod(0o755)
+    return prog
+
+
+@posix_only
+def test_python_on_windows_retries_pip_with_user_when_the_system_install_is_refused(
+    fakebin, calls, monkeypatch, capsys
+):
+    """A Microsoft Store Python is read-only: pip needs --user, and --user
+    does not work under -I, so the retry uses -E -P instead."""
+    monkeypatch.setattr(tools, "IS_WINDOWS", True)
+    fake_cmd(fakebin, calls, "python")
+    py3 = _pip_that_refuses_the_system_install(fakebin, calls)
+    tools.install_python_tools(path=str(fakebin), python=str(py3))
+    log = logged(calls)
+    assert "python3 -I -m pip install mcp<2 aiosqlite pyyaml" in log
+    assert "python3 -E -P -m pip install --user mcp<2 aiosqlite pyyaml" in log
+    assert "Failed to install pip packages" not in out(capsys)
+
+
+@posix_only
+def test_python_on_windows_warns_when_the_user_install_fails_too(fakebin, calls, monkeypatch, capsys):
+    monkeypatch.setattr(tools, "IS_WINDOWS", True)
+    fake_cmd(fakebin, calls, "python")
+    py3 = fake_cmd(fakebin, calls, "python3", rc=1)
+    tools.install_python_tools(path=str(fakebin), python=str(py3))
+    assert "--user" in logged(calls)
+    assert "Failed to install pip packages" in out(capsys)
+
+
+@posix_only
+def test_python_off_windows_never_retries_with_user(fakebin, calls, monkeypatch, capsys):
+    monkeypatch.setattr(tools, "IS_WINDOWS", False)
+    fake_cmd(fakebin, calls, "python")
+    py3 = fake_cmd(fakebin, calls, "python3", rc=1)
+    tools.install_python_tools(path=str(fakebin), python=str(py3))
+    assert "--user" not in logged(calls)
+    assert "Failed to install pip packages" in out(capsys)
+
+
 def test_python_on_windows_without_python_says_what_to_do(fakebin, calls, monkeypatch, capsys, tmp_path):
     monkeypatch.setattr(tools, "IS_WINDOWS", True)
     tools.install_python_tools(path=str(fakebin), python=str(tmp_path / "no-such-python"))

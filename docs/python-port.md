@@ -66,8 +66,8 @@ The bash is the baseline: anything not listed here behaves the same.
 - `--repair` refuses more. It does not delete a repo folder that is a link or junction, a non-empty folder that is not a clone, the home folder, or a folder that holds `~/.claude` or `~/.agents`. It also refuses when `git status` fails.
 - The hostname is checked with the profile-name rules before it names `machines/<hostname>.conf`.
 - The clone is made with `-c core.autocrlf=false`. A failed clone says `Could not clone the sync repo into DIR.` with git's error redacted. The URL is never printed.
-- On Windows the gh and python steps only say what to install. pip runs without `--break-system-packages` there.
-- On Windows the project path is stored in the native drive form (`Z:\projects`). A Git Bash form (`/z/projects`, `/c/Users/...`) given to the installer is converted before it is checked and stored, and the drive letter is upper-cased. A missing project path falls back to the home folder on Windows only. Elsewhere the path is stored as given, as before.
+- On Windows the gh and python steps only say what to install. pip runs without `--break-system-packages` there. If that install is refused (for example a Microsoft Store Python in a read-only folder), the installer retries once with `--user` (`python -E -P -m pip install --user`), and only then warns and continues.
+- On Windows the project path is stored in the native drive form (`Z:\projects`). A Git Bash form (`/z/projects`, `/c/Users/...`) given to the installer is converted before it is checked and stored, and the drive letter is upper-cased. A missing project path falls back to the home folder on Windows only; first, when stdin is a terminal, the installer asks `Create it? [y/N]` and makes the folder on a yes (a refusal, no terminal, or a folder that cannot be made keeps the fallback). Elsewhere the path is stored as given, as before.
 - An existing `machines/<hostname>.conf` written by the bash under Git Bash (`PRIMARY_PROJECT_PATH=/z/projects`) still works: on Windows `read_primary_project_path` reads it as `Z:\projects` and leaves the file as it is, so both forms resolve the same memory folder (`Z--projects`). The bash used `-z-projects` there (row 28 in `docs/risks.md`).
 
 ### publish
@@ -96,6 +96,7 @@ The Windows job is the only place these run. Before the cutover, check it covers
 - Non-ASCII output redirected to a file or pipe in a legacy code page does not crash the run.
 - `install.cmd --repair` run from a prompt outside the clone.
 - The memory folder for a project path with spaces (`C:\Users\John Smith\project` gives `C--Users-John-Smith-project`).
+- `install.cmd` on a Microsoft Store Python: the pip install is refused, retried with `--user`, and the project-path `Create it?` prompt works on a real console (W8).
 - Uppercase and non-ASCII hostnames: an uppercase one is kept as is, a non-ASCII one is refused with `Not a valid hostname`.
 
 Most checklist items that CI does not cover are run by hand with `docs/windows-manual-test.md`. It lists `install.cmd --repair` and the `python` fallback of the `.cmd` shims as out of scope.

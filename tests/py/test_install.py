@@ -62,7 +62,7 @@ def run_install(world, host, repo, claude, agents, *argv, stdin="", project="/ho
     if project is not None:
         env["CLAUDE_SYNC_PROJECT_PATH"] = project
     buf = io.StringIO()
-    saved, sys.stdin = sys.stdin, io.StringIO(stdin)
+    saved, sys.stdin = sys.stdin, (io.StringIO(stdin) if isinstance(stdin, str) else stdin)
     try:
         with redirect_stdout(buf), redirect_stderr(buf):
             rc = install.main(list(argv), env)
@@ -112,6 +112,55 @@ def test_install_on_windows_falls_back_to_home_for_a_missing_project(world, tmp_
     assert rc == 0, out
     assert conf_text(repo, "host-win") == f"PRIMARY_PROJECT_PATH={Path.home()}\n"
     assert "does not exist" in out
+
+
+class _Tty(io.StringIO):
+    def isatty(self):
+        return True
+
+
+def test_install_on_windows_offers_to_create_a_missing_project_and_creates_it(world, tmp_path, monkeypatch):
+    monkeypatch.setattr(install, "IS_WINDOWS", True)
+    repo, claude, agents = fresh(tmp_path, "win")
+    proj = tmp_path / "new" / "proj"
+    rc, out = run_install(world, "host-win", repo, claude, agents, project=str(proj), stdin=_Tty("y\n"))
+    assert rc == 0, out
+    assert proj.is_dir()
+    assert "Created" in out
+    assert "does not exist; using your home folder" not in out
+    assert conf_text(repo, "host-win") == f"PRIMARY_PROJECT_PATH={proj}\n"
+
+
+def test_install_on_windows_falls_back_when_the_offer_is_declined(world, tmp_path, monkeypatch):
+    monkeypatch.setattr(install, "IS_WINDOWS", True)
+    repo, claude, agents = fresh(tmp_path, "win")
+    proj = tmp_path / "declined"
+    rc, out = run_install(world, "host-win", repo, claude, agents, project=str(proj), stdin=_Tty("n\n"))
+    assert rc == 0, out
+    assert not proj.exists()
+    assert "does not exist; using your home folder" in out
+    assert conf_text(repo, "host-win") == f"PRIMARY_PROJECT_PATH={Path.home()}\n"
+
+
+def test_install_on_windows_falls_back_when_the_folder_cannot_be_made(world, tmp_path, monkeypatch):
+    monkeypatch.setattr(install, "IS_WINDOWS", True)
+    (tmp_path / "a-file").write_bytes(b"")
+    repo, claude, agents = fresh(tmp_path, "win")
+    proj = tmp_path / "a-file" / "sub"  # a file is in the way
+    rc, out = run_install(world, "host-win", repo, claude, agents, project=str(proj), stdin=_Tty("y\n"))
+    assert rc == 0, out
+    assert "Could not create" in out
+    assert conf_text(repo, "host-win") == f"PRIMARY_PROJECT_PATH={Path.home()}\n"
+
+
+def test_install_on_windows_does_not_ask_without_a_terminal(world, tmp_path, monkeypatch):
+    monkeypatch.setattr(install, "IS_WINDOWS", True)
+    repo, claude, agents = fresh(tmp_path, "win")
+    proj = tmp_path / "quiet"
+    rc, out = run_install(world, "host-win", repo, claude, agents, project=str(proj), stdin="y\n")
+    assert rc == 0, out
+    assert not proj.exists()
+    assert "Create it?" not in out
 
 
 def test_install_on_windows_keeps_an_existing_project(world, tmp_path, monkeypatch):
