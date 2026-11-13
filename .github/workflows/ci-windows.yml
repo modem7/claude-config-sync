@@ -1,0 +1,39 @@
+name: CI (Windows)
+
+# Windows runners bill at 2x on this private repo, so run only on PRs that
+# touch code or tests the Windows port depends on.
+on:
+  pull_request:
+    paths:
+      - claude_sync/**
+      - lib/**
+      - tests/py/**
+      - "*.sh"
+      - "*.cmd"
+      - pytest.ini
+      - .github/workflows/ci-windows.yml
+
+concurrency:
+  group: ci-windows-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pytest:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      - uses: actions/setup-python@v7.1.0
+        with:
+          python-version: "3.15"
+
+      - name: Install pytest
+        env:
+          PYTEST_VERSION: 9.2.0 # renovate: datasource=pypi depName=pytest
+        run: python -m pip install "pytest==${{ env.PYTEST_VERSION }}"
+
+      # Smoke subset only: the Windows-specific paths (links, install, shims,
+      # locking). The full suite runs on Linux; on Windows it took 17+ min.
+      - name: Run Windows smoke tests
+        run: python -m pytest tests/py/test_dir_links.py tests/py/test_install.py tests/py/test_shims.py tests/py/test_skilllinks.py tests/py/test_lock.py -q

@@ -2,11 +2,21 @@ name: CI
 
 on:
   push:
+    branches: [master]
+    paths-ignore: ["**.md"]
   pull_request:
+    paths-ignore: ["**.md"]
+
+# Private repo: Actions minutes are metered. Cancel superseded runs, and only
+# run on push for master (branch pushes are covered by pull_request).
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   lint-and-test:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7.0.1
 
@@ -39,18 +49,10 @@ jobs:
       - name: Run gitleaks
         run: gitleaks detect --source . -v
 
-      - name: Install bats-core
-        run: sudo apt-get update && sudo apt-get install -y bats
-
-      - name: Run bats test suite
-        run: bats tests/
-
   pytest:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest]
-    runs-on: ${{ matrix.os }}
+    # The Windows leg lives in ci-windows.yml so a paths filter can skip it.
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7.0.1
 
@@ -63,7 +65,5 @@ jobs:
           PYTEST_VERSION: 9.2.0 # renovate: datasource=pypi depName=pytest
         run: python -m pip install "pytest==${{ env.PYTEST_VERSION }}"
 
-      # Python only: no bash, shellcheck or bats steps here, so the Windows
-      # leg runs on a plain runner.
       - name: Run pytest suite
         run: python -m pytest tests/py -v

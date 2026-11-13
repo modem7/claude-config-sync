@@ -20,7 +20,7 @@ This repo syncs Claude Code's global config (`CLAUDE.md`, `settings.json`, agent
 - Code, tests and docs outside `machines/`, `memory/`, `private/` and `weekly-review/` must stay generic: placeholder hostnames (`host-a`, `host-b`), no personal paths, names or servers. They are published to the public template.
 - Agents in `dot-claude/agents/` are published, so they must be generic: no personal hosts, URLs, repos or paths. An agent tied to one setup goes in `machines/<profile>/agents/`. A profile agent with the same name replaces the shared one on that machine, so keep the two in step when you change either.
 - Python: standard library only, Python 3.12+. Shell scripts: `shellcheck install.sh claude-sync.sh legacy/*.sh npm-tools.sh gh-tools.sh python-tools.sh lib/*.sh` must pass.
-- Run `python -m pytest tests/py` and `bats tests` before opening a PR. CI runs pytest on Linux and Windows. Tests use a fake HOME through the `CLAUDE_SYNC_*` environment variables. Never run `claude-sync.sh` or `install.sh` against the real HOME while testing.
+- Run `python -m pytest tests/py` before opening a PR; run `bats tests` too if you touched `lib/` or `legacy/`. CI runs pytest on Linux, plus a small Windows smoke subset (links, install, shims, lock) on PRs that touch those paths; CI does not run bats. Tests use a fake HOME through the `CLAUDE_SYNC_*` environment variables. Never run `claude-sync.sh` or `install.sh` against the real HOME while testing.
 - Follow `docs/doc-map.md`: when you change something, update every doc it lists for that kind of change. Run the `docs-sync` agent on the branch before opening a PR.
 - Check `git status`, the branch and `origin` before starting.
 
