@@ -125,7 +125,7 @@ $env:CLAUDE_SYNC_REPO_DIR = "$T\repo"
 ```
 Expect: `host-win follows profile 'prof-test' (PROFILE= in machines/host-win.conf):` and its entries, `exit=0`.
 
-`py` is used before `python`:
+`py` is used before `python` (needs the `py` launcher; with no `py` on the machine, skip this check and mark it skipped in the results table):
 ```powershell
 New-Item -ItemType Directory -Force "$T\decoy" | Out-Null
 W "$T\decoy\python.cmd" "@echo DECOY python used`r`n@exit /b 9`r`n"
