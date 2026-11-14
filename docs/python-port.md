@@ -77,7 +77,7 @@ The bash is the baseline: anything not listed here behaves the same.
 
 ## Line endings
 
-`.gitattributes` has `* text=auto eol=lf` and `*.ps1`, `*.cmd` and `*.bat` with `eol=crlf`. Its last lines unset `text` for `dot-claude/**`, `dot-agents/**` and `memory/**`, so git stores and checks out the synced files byte for byte: a CRLF `CLAUDE.md` stays CRLF and an LF `.ps1` hook stays LF. They come last so they win over the per-extension rules above them. Other files in the repo are still normalised as before. This applies to the bash too, since it is git that does it. `tests/py/test_gitattributes.py` checks this against a copy of the real file.
+`.gitattributes` has `* text=auto eol=lf` and `*.ps1`, `*.cmd` and `*.bat` with `eol=crlf` (except `get.ps1` and `get.sh`, which stay LF). Its last lines unset `text` for `dot-claude/**`, `dot-agents/**` and `memory/**`, so git stores and checks out the synced files byte for byte: a CRLF `CLAUDE.md` stays CRLF and an LF `.ps1` hook stays LF. They come last so they win over the per-extension rules above them. Other files in the repo are still normalised as before. This applies to the bash too, since it is git that does it. `tests/py/test_gitattributes.py` checks this against a copy of the real file.
 
 - Not covered: profile files under `machines/<profile>/` (hooks, agents, `CLAUDE.append.md`) are still normalised by the per-extension rules.
 - A machine whose live files are CRLF only because an old clone checked them out that way (Windows, `core.autocrlf` on) now captures them as CRLF. Before the next sync, convert those live files to LF by hand, or drop the line-ending change from the PR (`docs/runbook.md`, "Re-check out a Windows clone"); re-checking the clone out does not change the live copies.
