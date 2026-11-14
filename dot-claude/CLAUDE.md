@@ -47,3 +47,7 @@ Planning stays in the main session, because it needs the whole conversation and 
 ## Scripts are written by Opus
 
 The default model is Sonnet. When a task needs a new script, a full rewrite, or a non-trivial change to a script (bash, Python, PowerShell, hook scripts), hand that part to the `script-writer` agent, which runs on Opus. Give it the real files and the goal. Then check what it wrote. Do not write scripts yourself on Sonnet. Single-line edits and config files stay with the main session.
+
+## PDFs and printed documents
+
+No widows or orphans: a paragraph never leaves one line alone at the top or bottom of a page, and a heading never sits alone at the bottom of a page. Set this in the renderer, then flip through the finished pages and check before delivery.
