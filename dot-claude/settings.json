@@ -113,7 +113,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "[ -x \"$HOME/claude-config/claude-sync.sh\" ] && { timeout 20 \"$HOME/claude-config/claude-sync.sh\" sync >> \"$HOME/.claude/claude-config-sync.log\" 2>&1 && echo '{\"systemMessage\": \"Synced config loaded.\"}' || echo '{\"systemMessage\": \"claude-config sync failed - see claude-config-sync.log\"}'; }; true",
+            "command": "[ -x \"$HOME/claude-config/claude-sync.sh\" ] && { timeout 20 \"$HOME/claude-config/claude-sync.sh\" sync >> \"$HOME/.claude/claude-config-sync.log\" 2>&1; rc=$?; echo \"claude-sync-hook: SessionStart exit=$rc $(date -u +%Y-%m-%dT%H:%M:%SZ)\" >> \"$HOME/.claude/claude-config-sync.log\"; if [ \"$rc\" -eq 0 ]; then echo '{\"systemMessage\": \"Synced config loaded.\"}'; else echo '{\"systemMessage\": \"claude-config sync failed - see claude-config-sync.log\"}'; fi; }; true",
             "timeout": 30,
             "statusMessage": "Syncing claude-config..."
           },
@@ -121,6 +121,11 @@
             "type": "command",
             "command": "\"$HOME/.claude/hooks/plugin-suggest.sh\"",
             "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "[ -x \"$HOME/claude-config/claude-sync.sh\" ] && timeout 5 \"$HOME/claude-config/claude-sync.sh\" status --line --json 2>/dev/null; true",
+            "timeout": 10
           }
         ]
       }
@@ -130,7 +135,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "[ -x \"$HOME/claude-config/claude-sync.sh\" ] && { timeout 20 \"$HOME/claude-config/claude-sync.sh\" sync >> \"$HOME/.claude/claude-config-sync.log\" 2>&1 && echo '{\"systemMessage\": \"Synced config saved.\"}' || echo '{\"systemMessage\": \"claude-config sync failed - see claude-config-sync.log\"}'; }; true",
+            "command": "[ -x \"$HOME/claude-config/claude-sync.sh\" ] && { timeout 20 \"$HOME/claude-config/claude-sync.sh\" sync >> \"$HOME/.claude/claude-config-sync.log\" 2>&1; rc=$?; echo \"claude-sync-hook: SessionEnd exit=$rc $(date -u +%Y-%m-%dT%H:%M:%SZ)\" >> \"$HOME/.claude/claude-config-sync.log\"; if [ \"$rc\" -eq 0 ]; then echo '{\"systemMessage\": \"Synced config saved.\"}'; else echo '{\"systemMessage\": \"claude-config sync failed - see claude-config-sync.log\"}'; fi; }; true",
             "timeout": 30,
             "statusMessage": "Syncing claude-config..."
           }

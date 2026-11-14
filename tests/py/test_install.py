@@ -435,7 +435,11 @@ def test_python_step_runs_without_the_flag(world, tmp_path, tool_calls):
 
 
 def test_usage_names_skip_python_deps():
-    assert install.USAGE.endswith("[--tier basic|full] [--skip-python-deps]")
+    assert install.USAGE.splitlines()[0].endswith("[--tier basic|full] [--skip-python-deps]")
+
+
+def test_usage_names_the_backups_env_var():
+    assert "CLAUDE_SYNC_BACKUPS=N" in install.USAGE
 
 
 # ── --profile (profile.bats) ─────────────────────────────────────────────

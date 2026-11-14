@@ -7,9 +7,12 @@ path is in test_cli.py. Placeholder hostnames only: this file is published.
 from __future__ import annotations
 
 import io
+import json
 import os
 import shlex
+import shutil
 import subprocess
+import sys
 from contextlib import ExitStack, redirect_stderr, redirect_stdout
 from pathlib import Path
 
@@ -486,3 +489,422 @@ def test_paste_arg_drops_control_characters_and_quotes():
         assert doctor._paste_arg("a b;c") == '"a b;c"'
     else:
         assert doctor._paste_arg("a b;$(c)") == "'a b;$(c)'"
+
+
+# ── plugins enabled but not installed (#76) ───────────────────────────────
+
+
+PLUGIN_SETTINGS = {
+    "theme": "dark",
+    "enabledPlugins": {
+        "tool@market-a": True,
+        "off@market-a": False,
+        "helper@claude-plugins-official": True,
+    },
+    "extraKnownMarketplaces": {
+        "market-a": {"source": {"source": "github", "repo": "example-org/market-a"}},
+    },
+}
+
+
+def cmd(verb, arg):
+    """A command line as plugin_report prints it, quoted for this platform."""
+    return f"claude plugin {verb} {doctor._paste_arg(arg)}"
+
+
+def install_plugins(m, *ids, marketplaces=()):
+    """Writes this machine's plugin records as Claude Code does (format 2)."""
+    pdir = m.claude / "plugins"
+    pdir.mkdir(parents=True, exist_ok=True)
+    records = {i: [{"scope": "user", "installPath": f"/x/{i}", "version": "1.0.0"}] for i in ids}
+    (pdir / "installed_plugins.json").write_text(json.dumps({"version": 2, "plugins": records}))
+    known = {n: {"source": {"source": "github", "repo": f"example-org/{n}"}} for n in marketplaces}
+    (pdir / "known_marketplaces.json").write_text(json.dumps(known))
+
+
+def _plugin_machine(world, settings=PLUGIN_SETTINGS, override=None):
+    files = {"dot-claude/settings.json": (json.dumps(settings) + "\n").encode()}
+    if override is not None:
+        files["machines/host-a.settings.json"] = (json.dumps(override) + "\n").encode()
+    world.commit_on_origin(files, "plugins enabled")
+    return world.machine("a")
+
+
+def _plugin_lines(out):
+    lines = out.splitlines()
+    start = next(i for i, ln in enumerate(lines) if ln.startswith("Plugins: "))
+    return [ln.strip() for ln in lines[start + 1:] if ln.startswith("  ")]
+
+
+def test_doctor_lists_commands_for_an_enabled_plugin_that_is_not_installed(world):
+    a = _plugin_machine(world)
+    rc, out = run_doctor(world, a)
+    assert rc == 0, out  # report only, never an ISSUE
+    assert "No issues found" in out
+    assert "doctor never installs anything" in out
+    cmds = [ln for ln in _plugin_lines(out) if ln.startswith("claude plugin")]
+    assert cmds == [
+        cmd("marketplace add", "anthropics/claude-plugins-official"),
+        cmd("marketplace add", "example-org/market-a"),
+        cmd("install", "helper@claude-plugins-official"),
+        cmd("install", "tool@market-a"),
+    ]
+    assert "off@market-a" not in out
+
+
+def test_doctor_is_silent_about_plugins_when_everything_matches(world):
+    a = _plugin_machine(world)
+    install_plugins(
+        a, "tool@market-a", "helper@claude-plugins-official",
+        marketplaces=("market-a", "claude-plugins-official"),
+    )  # fmt: skip
+    rc, out = run_doctor(world, a)
+    assert rc == 0, out
+    assert "Plugin" not in out and "claude plugin" not in out
+    assert doctor.plugin_report(a.ctx()) == []
+
+
+def test_doctor_lists_only_a_missing_marketplace(world):
+    a = _plugin_machine(world)
+    install_plugins(a, "tool@market-a", "helper@claude-plugins-official", marketplaces=("claude-plugins-official",))
+    rc, out = run_doctor(world, a)
+    assert rc == 0, out
+    assert _plugin_lines(out)[0] == cmd("marketplace add", "example-org/market-a")
+    assert "claude plugin install" not in out
+
+
+def test_doctor_does_not_report_a_plugin_an_override_turns_off(world):
+    a = _plugin_machine(
+        world, override={"enabledPlugins": {"tool@market-a": False, "helper@claude-plugins-official": False}}
+    )
+    install_plugins(a, marketplaces=("market-a",))
+    rc, out = run_doctor(world, a)
+    assert rc == 0, out
+    assert "claude plugin" not in out
+
+
+def test_doctor_notes_a_plugin_whose_marketplace_is_unknown(world):
+    settings = {"enabledPlugins": {"thing@nowhere": True}}
+    a = _plugin_machine(world, settings=settings)
+    install_plugins(a)
+    rc, out = run_doctor(world, a)
+    assert rc == 0, out
+    lines = _plugin_lines(out)
+    assert cmd("install", "thing@nowhere") in lines
+    assert any("its marketplace nowhere is not declared" in ln for ln in lines)
+
+
+def test_doctor_gives_the_source_for_each_marketplace_type(world):
+    markets = {
+        "m-git": {"source": {"source": "git", "url": "https://git.example.com/team/plugins.git"}},
+        "m-gh-ref": {"source": {"source": "github", "repo": "example-org/m", "ref": "v1"}},
+        "m-dir": {"source": {"source": "directory", "path": "/srv/market"}},
+        "m-url": {"source": {"source": "url", "url": "https://example.com/marketplace.json"}},
+        "m-git-no-suffix": {"source": {"source": "git", "url": "https://git.example.com/team/plugins"}},
+        "m-inline": {"source": {"source": "settings", "name": "m-inline", "plugins": []}},
+        "claudeai-org": {"source": {"source": "github", "repo": "example-org/x"}},
+    }
+    a = _plugin_machine(world, settings={"extraKnownMarketplaces": markets})
+    rc, out = run_doctor(world, a)
+    assert rc == 0, out
+    lines = _plugin_lines(out)
+    adds = [ln for ln in lines if ln.startswith("claude plugin marketplace add")]
+    assert adds == [
+        cmd("marketplace add", "/srv/market"),
+        cmd("marketplace add", "example-org/m#v1"),
+        cmd("marketplace add", "https://git.example.com/team/plugins.git"),
+        cmd("marketplace add", "https://example.com/marketplace.json"),
+    ]
+    assert any("m-git-no-suffix: no add command" in ln for ln in lines)
+    assert any("m-inline: no add command" in ln for ln in lines)
+    assert "claudeai-org" not in out
+
+
+def test_doctor_reads_the_additional_marketplaces_alias(world):
+    settings = {"additionalMarketplaces": {"m-alias": {"source": {"source": "github", "repo": "example-org/a"}}}}
+    a = _plugin_machine(world, settings=settings)
+    rc, out = run_doctor(world, a)
+    assert cmd("marketplace add", "example-org/a") in out
+
+
+@pytest.mark.parametrize(
+    "installed",
+    [b"[]", b"{not json", b'{"version": 2, "plugins": []}', b'{"version": 99, "plugins": {}}'],
+)
+def test_doctor_skips_the_plugin_check_on_an_unknown_file_shape(world, installed):
+    a = _plugin_machine(world)
+    install_plugins(a)
+    (a.claude / "plugins" / "installed_plugins.json").write_bytes(installed)
+    rc, out = run_doctor(world, a)
+    assert rc == 0, out
+    skips = [ln for ln in out.splitlines() if ln.startswith("Plugin check skipped: ")]
+    assert len(skips) == 1, out
+    assert "claude plugin" not in out
+    assert "Traceback" not in out
+
+
+def test_doctor_skips_on_an_unknown_marketplaces_shape(world):
+    a = _plugin_machine(world)
+    install_plugins(a)
+    (a.claude / "plugins" / "known_marketplaces.json").write_bytes(b'["market-a"]')
+    rc, out = run_doctor(world, a)
+    assert rc == 0, out
+    assert sum(ln.startswith("Plugin check skipped: ") for ln in out.splitlines()) == 1
+
+
+def test_doctor_accepts_the_older_dict_record_form(world):
+    a = _plugin_machine(world)
+    pdir = a.claude / "plugins"
+    pdir.mkdir(parents=True)
+    records = {"tool@market-a": {"version": "1"}, "helper@claude-plugins-official": {"version": "1"}}
+    (pdir / "installed_plugins.json").write_text(json.dumps({"plugins": records}))
+    (pdir / "known_marketplaces.json").write_text(json.dumps({"market-a": {}, "claude-plugins-official": {}}))
+    rc, out = run_doctor(world, a)
+    assert "claude plugin" not in out and "Plugin check skipped" not in out
+
+
+def test_doctor_ignores_synced_plugins_and_a_missing_settings_file(world):
+    a = _plugin_machine(world, settings={"enabledPlugins": {"x@synced": True}})
+    assert doctor.plugin_report(a.ctx()) == []
+    (a.claude / "settings.json").unlink()
+    assert doctor.plugin_report(a.ctx()) == []
+
+
+def test_plugin_install_hint_is_safe_to_paste(world, tmp_path):
+    plugin_id = "x;touch pwned@m$(touch pwned)"
+    a = _plugin_machine(world, settings={"enabledPlugins": {plugin_id: True}})
+    install_plugins(a, marketplaces=("m$(touch pwned)",))
+    lines = doctor.plugin_report(a.ctx())
+    if os.name == "nt":
+        assert not any(ln.strip().startswith("claude plugin install") for ln in lines)
+        return
+    cmd = next(ln.strip() for ln in lines if ln.strip().startswith("claude plugin install"))
+    assert shlex.split(cmd) == ["claude", "plugin", "install", plugin_id]
+
+
+def test_the_plugin_check_never_runs_anything(world, monkeypatch):
+    a = _plugin_machine(world)
+
+    def refuse(*args, **kwargs):
+        raise AssertionError("the plugin check ran a command")
+
+    monkeypatch.setattr(subprocess, "run", refuse)
+    monkeypatch.setattr(subprocess, "Popen", refuse)
+    monkeypatch.setattr(os, "system", refuse)
+    lines = doctor.plugin_report(a.ctx())
+    assert cmd("install", "tool@market-a") in [ln.strip() for ln in lines]
+
+
+# ── doctor install-plugins: the opt-in installer ──────────────────────────
+
+FAKE_CLAUDE = r'''
+import json
+import os
+import sys
+from pathlib import Path
+
+here = Path(__file__).resolve().parent
+with open(here / "calls.jsonl", "a", encoding="utf-8") as log:
+    log.write(json.dumps(sys.argv[1:]) + "\n")
+print("fake claude: " + " ".join(sys.argv[1:]))
+fail = os.environ.get("FAKE_CLAUDE_FAIL_ON")
+if fail and fail in sys.argv[1:]:
+    print("fake claude: refused", file=sys.stderr)
+    sys.exit(3)
+'''
+
+needs_posix = pytest.mark.skipif(os.name == "nt", reason="the fake claude is a POSIX script")
+
+
+def _path_without_claude() -> str:
+    """PATH minus every folder that holds a `claude`, so git still runs
+    but a real Claude Code CLI can never be reached."""
+    dirs = os.environ.get("PATH", "").split(os.pathsep)
+    return os.pathsep.join(d for d in dirs if d and not shutil.which("claude", path=d))
+
+
+@pytest.fixture
+def fake_claude(tmp_path, monkeypatch):
+    """A `claude` that logs its argv, the only one on PATH."""
+    bin_dir = tmp_path / "fake-claude-bin"
+    bin_dir.mkdir()
+    script = bin_dir / "claude"
+    script.write_text(f"#!{sys.executable}\n{FAKE_CLAUDE}")
+    script.chmod(0o755)
+    monkeypatch.setenv("PATH", os.pathsep.join([str(bin_dir), _path_without_claude()]))
+    assert shutil.which("claude") == str(script)
+    log = bin_dir / "calls.jsonl"
+
+    def calls():
+        if not log.exists():
+            return []
+        return [json.loads(ln) for ln in log.read_text().splitlines()]
+
+    return calls
+
+
+def run_install(m, *args, ask=None, interactive=None):
+    """(exit code, output) of install_plugins as machine m."""
+    buf = io.StringIO()
+    with redirect_stdout(buf), redirect_stderr(buf):
+        try:
+            rc = doctor.install_plugins(m.ctx(), list(args), ask=ask, interactive=interactive)
+        except Fail as err:
+            print(f"claude-sync: {err.message}\n{err.hint}")
+            rc = 1
+    return rc, buf.getvalue()
+
+
+EXPECTED_ORDER = [
+    ["plugin", "marketplace", "add", "anthropics/claude-plugins-official"],
+    ["plugin", "marketplace", "add", "example-org/market-a"],
+    ["plugin", "install", "helper@claude-plugins-official"],
+    ["plugin", "install", "tool@market-a"],
+]
+
+
+@needs_posix
+def test_install_plugins_declined_runs_nothing(world, fake_claude):
+    a = _plugin_machine(world)
+    asked = []
+    rc, out = run_install(a, ask=lambda p: asked.append(p) or "n", interactive=True)
+    assert rc == 1, out
+    assert asked == ["Run them? [y/N] "]
+    assert "Aborted: nothing was installed." in out
+    assert cmd("install", "tool@market-a") in out  # shown before the question
+    assert fake_claude() == []
+
+
+@needs_posix
+def test_install_plugins_yes_answer_runs_marketplaces_first_in_order(world, fake_claude):
+    a = _plugin_machine(world)
+    rc, out = run_install(a, ask=lambda p: "y", interactive=True)
+    assert rc == 0, out
+    assert fake_claude() == EXPECTED_ORDER
+    assert "off@market-a" not in out
+    assert "fake claude: plugin install tool@market-a" in out
+
+
+@needs_posix
+def test_install_plugins_with_yes_flag_does_not_ask(world, fake_claude):
+    a = _plugin_machine(world)
+
+    def never(prompt):
+        raise AssertionError("asked despite --yes")
+
+    rc, out = run_install(a, "--yes", ask=never, interactive=False)
+    assert rc == 0, out
+    assert fake_claude() == EXPECTED_ORDER
+
+
+@needs_posix
+def test_install_plugins_refuses_without_a_terminal_or_yes(world, fake_claude):
+    a = _plugin_machine(world)
+    rc, out = world.cli(a, "doctor", "install-plugins", stdin="y\n")
+    assert rc == 1, out
+    assert "Refused: no terminal to ask on and no --yes" in out
+    assert fake_claude() == []
+
+
+@needs_posix
+def test_install_plugins_through_the_cli_with_yes(world, fake_claude):
+    a = _plugin_machine(world)
+    rc, out = world.cli(a, "doctor", "install-plugins", "--yes")
+    assert rc == 0, out
+    assert fake_claude() == EXPECTED_ORDER
+
+
+@needs_posix
+@pytest.mark.parametrize("argv", [["--force"], ["--yes", "--yes"], ["yes"]])
+def test_install_plugins_bad_arguments_print_usage(world, fake_claude, argv):
+    a = _plugin_machine(world)
+    rc, out = world.cli(a, "doctor", "install-plugins", *argv)
+    assert rc == 1
+    assert out.startswith("Usage: ")
+    assert fake_claude() == []
+
+
+@needs_posix
+def test_install_plugins_stops_at_the_first_failure(world, fake_claude, monkeypatch):
+    a = _plugin_machine(world)
+    monkeypatch.setenv("FAKE_CLAUDE_FAIL_ON", "example-org/market-a")
+    rc, out = run_install(a, "--yes")
+    assert rc == 1, out
+    assert fake_claude() == EXPECTED_ORDER[:2]
+    assert f"{cmd('marketplace add', 'example-org/market-a')} failed (exit 3); stopped there." in out
+    assert f"Succeeded: {cmd('marketplace add', 'anthropics/claude-plugins-official')}" in out
+    assert f"Not run: {cmd('install', 'helper@claude-plugins-official')}" in out
+    assert f"Not run: {cmd('install', 'tool@market-a')}" in out
+    assert "fake claude: refused" in out
+
+
+def test_install_plugins_without_the_claude_cli_fails(world, monkeypatch):
+    a = _plugin_machine(world)
+    monkeypatch.setenv("PATH", _path_without_claude())
+    assert shutil.which("claude") is None
+    rc, out = run_install(a, "--yes")
+    assert rc == 1, out
+    assert "the claude CLI is not on PATH, so nothing was installed." in out
+
+
+@needs_posix
+def test_install_plugins_skips_what_the_check_only_notes(world, fake_claude):
+    settings = {
+        "enabledPlugins": {
+            "thing@nowhere": True,
+            "x@synced": True,
+            "p@m-git-no-suffix": True,
+            "--evil@market-a": True,
+            "ok@market-a": True,
+        },
+        "extraKnownMarketplaces": {
+            "market-a": {"source": {"source": "github", "repo": "example-org/market-a"}},
+            "m-git-no-suffix": {"source": {"source": "git", "url": "https://git.example.com/team/plugins"}},
+            "claudeai-org": {"source": {"source": "github", "repo": "example-org/x"}},
+        },
+    }
+    a = _plugin_machine(world, settings=settings)
+    install_plugins(a, marketplaces=("market-a",))
+    rc, out = run_install(a, "--yes")
+    assert rc == 0, out
+    assert fake_claude() == [["plugin", "install", "ok@market-a"]]
+    assert "its marketplace nowhere is not declared" in out
+    assert "m-git-no-suffix: no add command" in out
+    assert "p@m-git-no-suffix: its marketplace m-git-no-suffix is not on this machine" in out
+    assert sum("thing@nowhere" in ln for ln in out.splitlines()) == 1  # its note, once
+    assert "--evil@market-a: it starts with '-'" in out
+    assert "claudeai-org" not in out
+
+
+@needs_posix
+def test_install_plugins_with_nothing_missing_runs_nothing(world, fake_claude):
+    a = _plugin_machine(world)
+    install_plugins(
+        a, "tool@market-a", "helper@claude-plugins-official",
+        marketplaces=("market-a", "claude-plugins-official"),
+    )  # fmt: skip
+    rc, out = run_install(a)
+    assert rc == 0, out
+    assert "nothing to install" in out
+    assert fake_claude() == []
+
+
+@needs_posix
+def test_install_plugins_refuses_on_an_unknown_file_shape(world, fake_claude):
+    a = _plugin_machine(world)
+    install_plugins(a)
+    (a.claude / "plugins" / "installed_plugins.json").write_bytes(b"[]")
+    rc, out = run_install(a, "--yes")
+    assert rc == 1, out
+    assert "Plugin check skipped" in out and "Nothing was installed." in out
+    assert fake_claude() == []
+
+
+@needs_posix
+def test_plain_doctor_and_remediate_never_call_the_claude_cli(world, fake_claude):
+    a = _plugin_machine(world)
+    for argv in (["doctor"], ["doctor", "remediate"]):
+        rc, out = world.cli(a, *argv, stdin="y\n")
+        assert rc == 0, out
+        assert "claude plugin install" in out, out
+    assert fake_claude() == []

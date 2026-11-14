@@ -1,4 +1,5 @@
-"""`claude-sync doctor [remediate]`: diagnose (and repair) a stuck clone.
+"""`claude-sync doctor [remediate | install-plugins [--yes]]`: diagnose (and
+repair) a stuck clone, or install the plugins settings.json enables.
 
 Port of do_doctor and doctor_profile in claude-sync.sh. A claude-sync.sh
 from before sync branches committed captures on the default branch; if a
@@ -26,17 +27,19 @@ import shutil
 import sys
 from collections.abc import Callable
 from contextlib import ExitStack
+from dataclasses import dataclass, field
 
-from claude_sync import gitflow, machineconf, overlay, pr, profile
+from claude_sync import gitflow, machineconf, overlay, pr, profile, syncfiles
 from claude_sync.gitflow import SyncCtx
 from claude_sync.memorypath import long_name_warning
 from claude_sync.syncfiles import _remove
-from claude_sync.util import Fail, UsageError, printable
+from claude_sync.util import Fail, UsageError, printable, run
 
 
 class _Report:
     def __init__(self) -> None:
         self.issues = 0
+        self.drift = False  # live config differs from the repo
 
     def __call__(self, text: str) -> None:
         self.issues = 1
@@ -109,7 +112,15 @@ def do_doctor(
             " settings.json (or 'override add' it away on this machine), or restore the script."
         )
 
+    if report.drift:
+        _note_newest_backup(ctx)
+
     _check_hook_modes(ctx, report)
+
+    # Report only, never an ISSUE: remediate could not fix it, since doctor
+    # never installs anything (only the separate install-plugins does).
+    for line in plugin_report(ctx):
+        print(line)
 
     if not report.issues:
         print("No issues found - sync is healthy.")
@@ -117,6 +128,19 @@ def do_doctor(
         sb = gitflow.sync_branch(ctx.hostname)
         print(f"Note: {sb} holds this machine's changes that are not merged yet; its PR shares them once merged.")
     return report.issues
+
+
+def _note_newest_backup(ctx: SyncCtx) -> None:
+    """After drift: where the last apply put the local files it replaced,
+    in case the drift is that apply discarding a local edit."""
+    newest = syncfiles.newest_backup(gitflow.backups_root(ctx))
+    if newest is None:
+        print("Note: no backups of replaced local files exist (CLAUDE_SYNC_BACKUPS).")
+        return
+    print(
+        f"Note: the newest backup of local files an apply replaced or removed is {printable(str(newest))}"
+        " (see docs/runbook.md, 'Restore a file from an apply backup')."
+    )
 
 
 def _tier_line(ctx: SyncCtx, tier: str) -> str:
@@ -242,6 +266,343 @@ def _check_hook_modes(ctx: SyncCtx, report: _Report) -> None:
         )
 
 
+# ── plugins enabled in settings.json but not on this machine ─────────────
+# settings.json is synced, the plugin code (~/.claude/plugins/cache) is not.
+# So a new machine can have plugins enabled that were never installed. This
+# lists the commands to run; doctor never runs them (supply chain). Only
+# `doctor install-plugins`, an explicit opt-in that asks first, does.
+
+# Claude Code adds this marketplace itself on the first interactive session,
+# so settings.json usually does not declare it.
+_OFFICIAL_MARKETPLACE = "claude-plugins-official"
+_OFFICIAL_SOURCE = "anthropics/claude-plugins-official"
+# installed_plugins.json format versions whose shape this check knows.
+_KNOWN_INSTALL_VERSIONS = (1, 2)
+
+
+class _Shape(Exception):
+    """A plugin file this check cannot read or does not recognise."""
+
+
+def _load_json(path) -> object | None:
+    """The parsed file, None when it does not exist. _Shape when it can't
+    be read or is not JSON."""
+    try:
+        raw = path.read_bytes()
+    except FileNotFoundError:
+        return None
+    except OSError as err:
+        raise _Shape(f"{path} could not be read ({err.strerror or err})") from err
+    try:
+        return json.loads(raw)
+    except ValueError as err:
+        raise _Shape(f"{path} is not valid JSON") from err
+
+
+def _installed_ids(path) -> set[str]:
+    """Plugin ids with an install record. Only the keys of "plugins" are
+    used, so both the dict (v1) and list (v2) record forms work."""
+    data = _load_json(path)
+    if data is None:
+        return set()
+    if not isinstance(data, dict) or not isinstance(data.get("plugins"), dict):
+        raise _Shape(f"{path} has no \"plugins\" object")
+    version = data.get("version", 1)
+    if version not in _KNOWN_INSTALL_VERSIONS or isinstance(version, bool):
+        raise _Shape(f"{path} is format version {repr(version)}, which this check does not know")
+    return {k for k in data["plugins"] if isinstance(k, str)}
+
+
+def _known_marketplaces(path) -> set[str]:
+    data = _load_json(path)
+    if data is None:
+        return set()
+    if not isinstance(data, dict):
+        raise _Shape(f"{path} is not a JSON object")
+    return {k for k in data if isinstance(k, str)}
+
+
+def _declared_marketplaces(settings: dict) -> dict[str, object]:
+    """extraKnownMarketplaces, plus its alias additionalMarketplaces."""
+    declared: dict[str, object] = {}
+    for key in ("additionalMarketplaces", "extraKnownMarketplaces"):
+        value = settings.get(key)
+        if isinstance(value, dict):
+            declared.update((k, v) for k, v in value.items() if isinstance(k, str))
+    # claude.ai marketplaces are recorded elsewhere (known_marketplaces_claudeai.json).
+    return {k: v for k, v in declared.items() if not k.startswith("claudeai-")}
+
+
+def _marketplace_source(entry: object) -> str | None:
+    """The `claude plugin marketplace add` argument for a declared entry, or
+    None when the CLI can't be given it (it would read it as another type)."""
+    source = entry.get("source") if isinstance(entry, dict) else None
+    if not isinstance(source, dict):
+        return None
+    kind = source.get("source")
+    if kind == "github":
+        repo, ref = source.get("repo"), source.get("ref")
+        if not isinstance(repo, str) or not repo:
+            return None
+        return f"{repo}#{ref}" if isinstance(ref, str) and ref else repo
+    if kind == "git":
+        url, ref = source.get("url"), source.get("ref")
+        if not isinstance(url, str) or not url:
+            return None
+        # The CLI reads any other https URL as a hosted marketplace.json.
+        bare = url.split("#", 1)[0].rstrip("/")
+        hosted_repo = bare.startswith(("https://github.com/", "https://gitlab.com/"))
+        if not (bare.endswith(".git") or "/_git/" in bare or hosted_repo or "://" not in bare):
+            return None
+        return f"{url}#{ref}" if isinstance(ref, str) and ref and "#" not in url else url
+    if kind == "url":
+        url = source.get("url")
+        # A .git URL would be cloned, not fetched as a marketplace.json.
+        if not isinstance(url, str) or not url or url.split("#", 1)[0].endswith(".git"):
+            return None
+        return url
+    if kind in ("directory", "file"):
+        path = source.get("path")
+        return path if isinstance(path, str) and path else None
+    return None
+
+
+@dataclass
+class _PluginPlan:
+    add: dict[str, str] = field(default_factory=dict)  # marketplace name -> its add argument
+    missing: list[str] = field(default_factory=list)  # plugin ids enabled, not installed
+    notes: list[str] = field(default_factory=list)
+    known: set[str] = field(default_factory=set)  # marketplaces this machine has
+
+
+def _plugin_plan(ctx: SyncCtx) -> _PluginPlan | str | None:
+    """What this machine lacks: None without a usable live settings.json, a
+    reason (str) when a plugin file can't be read. Never runs anything."""
+    try:
+        settings = json.loads((ctx.claude_home / "settings.json").read_bytes())
+    except (OSError, ValueError):
+        return None  # missing or broken: other checks cover settings.json
+    if not isinstance(settings, dict):
+        return None
+    enabled = settings.get("enabledPlugins")
+    enabled = enabled if isinstance(enabled, dict) else {}
+    declared = _declared_marketplaces(settings)
+
+    plugins_dir = ctx.claude_home / "plugins"
+    try:
+        installed = _installed_ids(plugins_dir / "installed_plugins.json")
+        known = _known_marketplaces(plugins_dir / "known_marketplaces.json")
+    except _Shape as err:
+        return _printable(str(err))
+
+    plan = _PluginPlan(known=known)
+    add, notes, missing = plan.add, plan.notes, plan.missing
+    for name in sorted(declared):
+        if name in known:
+            continue
+        source = _marketplace_source(declared[name])
+        if source is None:
+            notes.append(
+                f"marketplace {_printable(name)}: no add command can be given for its source;"
+                " Claude Code adds it from settings.json after the next interactive session starts."
+            )
+        else:
+            add[name] = source
+
+    for plugin_id in sorted(k for k, v in enabled.items() if v is True and isinstance(k, str)):
+        _, at, market = plugin_id.rpartition("@")
+        # "@synced" plugins come from the claude.ai account, not a marketplace.
+        if not at or not market or market == "synced" or plugin_id in installed:
+            continue
+        missing.append(plugin_id)
+        if market in known or market in declared:
+            continue
+        if market == _OFFICIAL_MARKETPLACE:
+            add[market] = _OFFICIAL_SOURCE
+        else:
+            notes.append(
+                f"{_printable(plugin_id)}: its marketplace {_printable(market)} is not declared in"
+                " settings.json; add that marketplace first."
+            )
+    return plan
+
+
+def plugin_report(ctx: SyncCtx) -> list[str]:
+    """Lines saying which plugins the live settings.json enables, and which
+    marketplaces it declares, that this machine does not have, each with
+    the command to run. Empty when everything matches or there is no live
+    settings.json. Reads the live file, so a plugin an override turns off is
+    not reported. Never runs anything."""
+    plan = _plugin_plan(ctx)
+    if isinstance(plan, str):
+        return [f"Plugin check skipped: {plan}."]
+    if plan is None or not (plan.add or plan.missing or plan.notes):
+        return []
+    add, missing, notes = plan.add, plan.missing, plan.notes
+    lines = [
+        "Plugins: settings.json enables plugins or declares marketplaces this machine does not have."
+        " doctor never installs anything; review and run these yourself"
+        " (or run 'claude-sync.sh doctor install-plugins', which asks first):"
+    ]
+    for name in sorted(add):
+        arg = _paste_arg(add[name])
+        if arg is None:
+            lines.append(
+                f"  (add marketplace {_printable(name)} with /plugin marketplace add:"
+                " its source can't be pasted safely here)"
+            )
+        else:
+            lines.append(f"  claude plugin marketplace add {arg}")
+    for plugin_id in missing:
+        arg = _paste_arg(plugin_id)
+        if arg is None:
+            lines.append(
+                f"  (install {_printable(plugin_id)} with /plugin install:"
+                " its name can't be pasted safely here)"
+            )
+        else:
+            lines.append(f"  claude plugin install {arg}")
+    lines.extend(f"  Note: {note}" for note in notes)
+    lines.append(
+        "  Inside a session use /plugin marketplace add and /plugin install instead. To keep a plugin"
+        " off this machine only, set it to false in ~/.claude/settings.json and run"
+        " 'claude-sync.sh override add' on its .enabledPlugins entry."
+    )
+    return lines
+
+
+# ── doctor install-plugins: the opt-in that runs those commands ──────────
+# Plain doctor and doctor remediate never get here. Each command is shown,
+# then run only after a yes (or --yes), with a list argv and no shell.
+
+_YES = ("y", "Y", "yes", "YES")
+# cmd.exe reads these even in an argument Python passes to a .cmd file.
+_CMD_UNSAFE = set("&|<>^()")
+
+
+def _install_args(args: list[str]) -> bool:
+    """`[--yes]`; anything else is a usage error. Says whether --yes was given."""
+    if args not in ([], ["--yes"]):
+        raise UsageError()
+    return bool(args)
+
+
+def _unsafe_arg(text: str, via_cmd: bool) -> str | None:
+    """Why text can't be run exactly as shown, or None when it can."""
+    if _printable(text) != text:
+        return "it holds control characters"
+    if text.startswith("-"):
+        return "it starts with '-', so the CLI would read it as an option"
+    if _paste_arg(text) is None or (via_cmd and _CMD_UNSAFE & set(text)):
+        return "it holds characters this platform's shell would read"
+    return None
+
+
+def install_plugins(
+    ctx: SyncCtx,
+    args: list[str],
+    *,
+    ask: Callable[[str], str] | None = None,
+    interactive: bool | None = None,
+) -> int:
+    """Runs the `claude plugin` commands plugin_report lists: marketplaces
+    first, then plugins, stopping at the first failure. Shows them and asks
+    first; `--yes` in `args` skips the question, and without a terminal
+    (`interactive`, default: stdin is one) it refuses unless --yes. Returns
+    0 when every command ran; a failure raises Fail. Entries the report
+    only notes, and names that could not be run exactly as shown, are
+    listed and not run. Never touches the clone, so takes no lock."""
+    yes = _install_args(args)
+    plan = _plugin_plan(ctx)
+    if isinstance(plan, str):
+        raise Fail(
+            f"Plugin check skipped: {plan}. Nothing was installed.",
+            hint="  Fix or move the file named above (Claude Code may have changed its format), then re-run.",
+        )
+    if plan is None or not (plan.add or plan.missing):
+        print("Plugins: nothing to install; settings.json enables nothing this machine lacks.")
+        for note in plan.notes if plan else []:
+            print(f"  Note: {note}")
+        return 0
+
+    claude = shutil.which("claude")
+    if claude is None:
+        raise Fail(
+            "the claude CLI is not on PATH, so nothing was installed.",
+            hint="  Install Claude Code or add it to PATH, then re-run. Inside a session"
+            " /plugin marketplace add and /plugin install do the same.",
+        )
+    via_cmd = os.name == "nt" and claude.lower().endswith((".cmd", ".bat"))
+
+    steps: list[tuple[str, list[str]]] = []  # (line shown, argv after the CLI)
+    not_run: list[str] = list(plan.notes)
+    available = set(plan.known)
+    for name in sorted(plan.add):
+        source = plan.add[name]
+        why = _unsafe_arg(source, via_cmd)
+        if why:
+            not_run.append(f"marketplace {_printable(name)}: {why}; add it with /plugin marketplace add.")
+            continue
+        available.add(name)
+        steps.append((f"claude plugin marketplace add {_paste_arg(source)}", ["plugin", "marketplace", "add", source]))
+    for plugin_id in plan.missing:
+        market = plugin_id.rpartition("@")[2]
+        if market not in available:
+            shown = _printable(plugin_id)
+            if not any(note.startswith(f"{shown}: ") for note in plan.notes):  # else that note says why
+                not_run.append(
+                    f"{shown}: its marketplace {_printable(market)} is not on this machine and is not added"
+                    " here, so it is not installed."
+                )
+            continue
+        why = _unsafe_arg(plugin_id, via_cmd)
+        if why:
+            not_run.append(f"{_printable(plugin_id)}: {why}; install it with /plugin install.")
+            continue
+        steps.append((f"claude plugin install {_paste_arg(plugin_id)}", ["plugin", "install", plugin_id]))
+
+    if not_run:
+        print("Not run here (do these by hand, or leave them to Claude Code):")
+        for line in not_run:
+            print(f"  {line}")
+    if not steps:
+        print("Plugins: nothing this command can install.")
+        return 0
+
+    print(
+        f"These commands will run, in this order, with {_printable(claude)}."
+        " Each fetches and installs third-party code from the source named:"
+    )
+    for line, _ in steps:
+        print(f"  {line}")
+    sys.stdout.flush()
+    if not yes:
+        if not (sys.stdin.isatty() if interactive is None else interactive):
+            raise Fail(
+                "Refused: no terminal to ask on and no --yes, so nothing was installed.",
+                hint="  Read the commands above, then re-run in a terminal or with --yes.",
+            )
+        if (ask or _ask)("Run them? [y/N] ") not in _YES:
+            raise Fail("Aborted: nothing was installed.")
+
+    done: list[str] = []
+    for i, (line, tail) in enumerate(steps):
+        print(f"Running: {line}", flush=True)
+        result = run([claude, *tail])
+        for text in (result.stdout, result.stderr):
+            for out in text.splitlines():
+                print(f"    {_printable(out)}")
+        if result.returncode != 0:
+            rest = [ln for ln, _ in steps[i + 1:]]
+            summary = [f"  Succeeded: {ln}" for ln in done] + [f"  Not run: {ln}" for ln in rest]
+            summary.append("  Fix the cause shown above, then re-run 'claude-sync.sh doctor install-plugins'.")
+            raise Fail(f"{line} failed (exit {result.returncode}); stopped there.", hint="\n".join(summary))
+        done.append(line)
+        print(f"  ok: {line}")
+    print(f"Plugins: ran {len(done)} command(s). Start a new Claude Code session to load them.")
+    return 0
+
+
 def _check_settings(ctx: SyncCtx, report: _Report, remediate: bool) -> None:
     live = ctx.claude_home / "settings.json"
     shared = ctx.repo / "dot-claude" / "settings.json"
@@ -260,6 +621,7 @@ def _check_settings(ctx: SyncCtx, report: _Report, remediate: bool) -> None:
         "local ~/.claude/settings.json differs from the repo's dot-claude/settings.json"
         " (plus this machine's overrides)."
     )
+    report.drift = True
     if remediate:
         gitflow.do_apply(ctx)
         print("  -> re-applied the repo's settings.json to local.")
@@ -292,6 +654,8 @@ def doctor_profile(ctx: SyncCtx, report: Callable[[str], None], remediate: bool)
     report(
         f"live config differs from the shared config plus profile '{name}' for: {', '.join(mismatches)}."
     )
+    if isinstance(report, _Report):
+        report.drift = True
     if not remediate:
         return
     edited = _read_only(

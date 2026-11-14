@@ -60,6 +60,8 @@ class SyncCtx:
     agents_home: Path
     hostname: str
     lock_wait: float = DEFAULT_WAIT
+    # CLAUDE_SYNC_BACKUPS: backup folders apply keeps (0: none made).
+    backups: int = syncfiles.DEFAULT_BACKUPS
     # T10's gh_sync_pr_state bound to the repo slug; "unknown" until then.
     pr_state: PrState = _unknown_pr_state
     default: str = ""  # DEF: origin's default branch, set by begin_sync
@@ -253,6 +255,12 @@ def memory_backup_root(ctx: SyncCtx) -> Path:
     """Where memory adoption keeps a copy of each local memory file it is
     about to overwrite with the repo's version."""
     return ctx.claude_home / ".claude-sync-memory-backup"
+
+
+def backups_root(ctx: SyncCtx) -> Path:
+    """Where apply keeps a copy of each live file it overwrites or deletes,
+    one folder per apply. Outside everything capture copies."""
+    return ctx.claude_home / syncfiles.BACKUP_DIR
 
 
 def memory_mode(ctx: SyncCtx) -> str:
@@ -1237,17 +1245,31 @@ def apply_local_config(
     """Every apply goes through here, so the profile is never left out.
     Skill links are wired last, after profile-disabled skills are gone.
     memory_dir=None leaves local memory alone (basic tier); memory_mirror
-    overrides `mirror` for memory only (see syncfiles.sync_apply)."""
+    overrides `mirror` for memory only (see syncfiles.sync_apply).
+
+    Unless ctx.backups is 0, each live file this overwrites or deletes is
+    copied under backups_root first. The check that the root is a real
+    folder runs before anything changes; copies of files the apply put back
+    as they were (an override or profile layered on again) are dropped at
+    the end, so an apply that changed nothing leaves no folder."""
     prof = current_profile(ctx)
-    profile.profile_unapply(ctx.claude_home, ctx.agents_home)
+    backup = None
+    if ctx.backups > 0:
+        backup = syncfiles.Backup(
+            backups_root(ctx), ((ctx.claude_home, ""), (ctx.agents_home, ".agents/"))
+        )
+        backup.check()
+    profile.profile_unapply(ctx.claude_home, ctx.agents_home, backup)
     syncfiles.sync_apply(
         ctx.repo, ctx.claude_home, ctx.agents_home, mirror=mirror, memory_dir=memory_dir,
-        memory_mirror=memory_mirror,
+        memory_mirror=memory_mirror, backup=backup,
     )
     apply_settings_overlay(ctx)
     profile.profile_apply(ctx.repo, ctx.claude_home, ctx.agents_home, prof)
     tracked, disabled = skilllinks.tracked_skills(ctx.repo, profile.profile_dir(ctx.repo, prof))
     skilllinks.wire_skill_links(ctx.claude_home, ctx.agents_home, tracked, disabled)
+    if backup is not None:
+        backup.finish()
 
 
 def do_apply(ctx: SyncCtx) -> None:
@@ -1276,6 +1298,7 @@ def do_apply(ctx: SyncCtx) -> None:
             _record_memory_off(ctx)
         elif mode == MEMORY_ADOPT:
             _record_memory_merged(ctx)
+        syncfiles.prune_backups(backups_root(ctx), ctx.backups)
     _exit_if_caught(caught)
 
 
@@ -1294,4 +1317,5 @@ def do_apply_merge(ctx: SyncCtx) -> None:
             _record_memory_off(ctx)
         elif mode == MEMORY_ADOPT:
             _record_memory_merged(ctx)
+        syncfiles.prune_backups(backups_root(ctx), ctx.backups)
     _exit_if_caught(caught)

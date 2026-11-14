@@ -28,6 +28,7 @@ Skipped on Windows (so not tested there): everything that needs a real symlink, 
 | Exec bit kept for a new hook committed from Windows | Skipped | W11 |
 | Profile hooks ending in `.sh` skipped, `profile copy` lists every hook | Partly (`test_doctor.py`, `test_profile.py` skip some) | W12 |
 | Non-ASCII hostname refused, non-ASCII output in a legacy code page | Yes | W13 |
+| `doctor install-plugins` running a real `claude.cmd` or `claude.exe` (argument quoting through `cmd.exe`) | Skipped (the fake CLI is a POSIX script) | W17 |
 | `install.cmd --repair` from a prompt outside the clone | Not run | Not in this test (see the note at the end) |
 
 ## Set up
@@ -109,7 +110,7 @@ W "$T\claude\CLAUDE.md" "# local edit`n"
 ```powershell
 & $cs bogus; "exit=$LASTEXITCODE"
 ```
-Expect: the usage text, first line `Usage: claude-sync.sh [push|pull|sync|bootstrap|doctor [remediate]|override add|remove|list [JQ_PATH]`, then `exit=1`.
+Expect: the usage text, first line `Usage: claude-sync.sh [push|pull|sync|bootstrap|doctor [remediate|install-plugins [--yes]]`, then `exit=1`.
 
 ```powershell
 & $cs profile show "a b"; "exit=$LASTEXITCODE"
@@ -349,6 +350,9 @@ Close the window afterwards: it holds throwaway values for `USERPROFILE` and `HO
 | W12 profile hooks | | |
 | W13 hostname and encoding | | |
 | W14 `get.ps1` | | |
+| W15 apply backups | | |
+| W16 session status line | | |
+| W17 `doctor install-plugins` | | |
 
 ## Not covered here
 
@@ -364,3 +368,94 @@ Not isolated like the steps above: it installs real software with `winget` and l
 2. Repeat without `-DryRun`. Expect winget to install what is missing, a new `PATH` to be picked up without a new terminal, and the installer to run.
 3. Repeat from Command Prompt: `powershell -NoProfile -ExecutionPolicy Bypass -Command "irm ... | iex"`.
 4. Repeat in PowerShell 7. Record what failed, and where, in a PR.
+
+## W15. Apply backups: read-only files, pruning, a junction root and long paths
+
+Run after W7, in the same window (`$T`, `$cs` and `W` set up as above).
+
+1. A local edit to a read-only file, overwritten by a pull:
+```powershell
+attrib -R "$T\claude\agents\a1.md"; W "$T\claude\agents\a1.md" "my local edit`n"; attrib +R "$T\claude\agents\a1.md"
+& $cs pull; "exit=$LASTEXITCODE"
+$b = Get-ChildItem "$T\claude\.claude-sync-backups" | Sort-Object Name | Select-Object -Last 1
+Get-Content "$($b.FullName)\agents\a1.md"; Get-Content "$T\claude\agents\a1.md"
+```
+Expect: `exit=0`, a line `the old copies are in ...\.claude-sync-backups\<time>`, then `my local edit`, then the repo's `agent` and `upstream line 2`.
+
+2. Pruning a backup that holds a read-only file, and a bad value:
+```powershell
+attrib +R /S "$T\claude\.claude-sync-backups\*"
+$env:CLAUDE_SYNC_BACKUPS = "1"
+W "$T\claude\agents\a1.md" "second edit`n"
+& $cs pull; "exit=$LASTEXITCODE"
+(Get-ChildItem "$T\claude\.claude-sync-backups").Count
+$env:CLAUDE_SYNC_BACKUPS = "x"; & $cs doctor; "exit=$LASTEXITCODE"; $env:CLAUDE_SYNC_BACKUPS = $null
+```
+Expect: `exit=0` with no `Access is denied` and no `could not remove old backup` warning, a count of `1`, then `CLAUDE_SYNC_BACKUPS must be a whole number, not 'x'.` and `exit=1`.
+
+3. A junction where the backup folder should be:
+```powershell
+attrib -R /S "$T\claude\.claude-sync-backups\*"; cmd /c rmdir /s /q "$T\claude\.claude-sync-backups"
+New-Item -ItemType Directory "$T\elsewhere" | Out-Null
+cmd /c mklink /J "$T\claude\.claude-sync-backups" "$T\elsewhere"
+W "$T\claude\agents\a1.md" "third edit`n"
+& $cs pull; "exit=$LASTEXITCODE"
+Get-Content "$T\claude\agents\a1.md"; (Get-ChildItem "$T\elsewhere").Count
+cmd /c rmdir "$T\claude\.claude-sync-backups"
+```
+Expect: `... is a link or not a folder, so apply cannot keep backups there.`, `exit=1`, `third edit` (not replaced) and `0` (nothing written through the junction).
+
+4. A long path. Make an agent whose live path is about 230 characters, pull it, edit it locally, then pull again:
+```powershell
+$deep = "agents\" + (("d" * 40 + "\") * 4) + "x.md"
+W "$T\seed\dot-claude\$deep" "v1`n"
+git -C "$T\seed" add -A; git -C "$T\seed" -c user.name=t -c user.email=t@example.invalid commit -q -m "deep agent"; git -C "$T\seed" push -q origin HEAD:master
+& $cs pull; "exit=$LASTEXITCODE"
+W "$T\claude\$deep" "local deep edit`n"
+& $cs pull; "exit=$LASTEXITCODE"
+```
+Expect (unknown, record it): with long paths enabled, `exit=0` and the edit in the newest backup folder. Without them the backup copy may fail: the run should end with a short `claude-sync: ...` message, not a traceback, and `$T\claude\$deep` should still say `local deep edit`.
+
+## W16. The session status line under Git Bash
+
+Run after the set-up and a first `& $cs pull` (`$T`, `$cs` and `W` set up as above).
+
+1. Healthy, then a failed hook sync in the log, timed:
+```powershell
+& $cs status --line; "exit=$LASTEXITCODE"
+Add-Content "$T\claude\claude-config-sync.log" "claude-sync-hook: SessionEnd exit=1 2026-01-01T00:00:00Z"
+(Measure-Command { & $cs status --line | Out-Host }).TotalMilliseconds
+& $cs status --line --json
+```
+Expect: no line and `exit=0`, then `claude-config: the last claude-config sync (SessionEnd) failed with exit 1. ...` and a time well under 1000 (record it; the test budget on Linux is 500 ms), then one JSON object whose `systemMessage` and `hookSpecificOutput.additionalContext` are both that line.
+
+2. The real hook command, run by Git Bash as Claude Code does. `HOME` points at `$T\home`, so link the test clone in as `~/claude-config` and take the command from the real `settings.json` (the seed's parent commit):
+```powershell
+cmd /c mklink /J "$T\home\claude-config" "$T\repo"
+$json = (git -C "$T\seed" show HEAD~1:dot-claude/settings.json) -join "`n" | ConvertFrom-Json
+$hook = $json.hooks.SessionStart[0].hooks | Where-Object { $_.command -like '*status --line*' }
+W "$T\status-hook.sh" "$($hook.command)`n"
+& "$env:ProgramFiles\Git\bin\bash.exe" "$T\status-hook.sh"; "exit=$LASTEXITCODE"
+cmd /c rmdir "$T\home\claude-config"
+```
+Expect: one JSON object on one line (ASCII only, both keys holding the line from step 1), nothing on stderr, `exit=0`. Record any `timeout: command not found`, a `\r` in the output, or a second line. In a real Claude Code session on the same machine, check that the line shows to you as well as to Claude.
+
+## W17. `doctor install-plugins` with the real Claude Code CLI
+
+Run on a spare user account or a throwaway Claude Code config: a yes installs real plugins. `$T` and `$cs` as above, with `CLAUDE_SYNC_CLAUDE_HOME` pointing at the same folder Claude Code uses.
+
+1. Enable one small plugin that is not installed (in `settings.json`), then:
+```powershell
+& $cs doctor install-plugins; "exit=$LASTEXITCODE"
+```
+Answer `n`. Expect: the commands listed with the path of the `claude` found (`claude.exe` or `claude.cmd`), `Aborted: nothing was installed.`, `exit=1`.
+
+2. Again, answer `y`. Expect: `marketplace add` lines run before `install`, each `ok:`, `exit=0`, and `claude plugin list` shows the plugin.
+
+3. Echo-pipe with no `--yes`:
+```powershell
+"y" | & $cs doctor install-plugins; "exit=$LASTEXITCODE"
+```
+Expect: `Refused: no terminal to ask on and no --yes`, `exit=1`, nothing run.
+
+4. With `claude.cmd` (npm install), enable a plugin named `a&b@market` by hand. Expect: it is listed as not run ("characters this platform's shell would read") and no `'b' is not recognized` error.

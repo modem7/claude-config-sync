@@ -49,6 +49,40 @@ or on a machine that is already set up:
 ~/claude-config/claude-sync.sh profile use host-a
 ```
 
+Plugin code (`~/.claude/plugins/cache`) is never synced, only `settings.json`, so plugins can show as enabled and not be installed. Run `claude-sync.sh doctor` after the first sync and see "Install plugins that settings.json enables" below.
+
+## Install plugins that settings.json enables
+
+`claude-sync.sh doctor` compares `enabledPlugins` and `extraKnownMarketplaces` (or its alias `additionalMarketplaces`) in the live `~/.claude/settings.json` with `~/.claude/plugins/installed_plugins.json` and `known_marketplaces.json`. For each marketplace declared but not known, and each plugin enabled but not installed, it prints the command to run, marketplaces first:
+
+```bash
+claude plugin marketplace add example-org/example-marketplace
+claude plugin install example-plugin@example-marketplace
+```
+
+- It never runs them. Read each one before you paste it: a plugin runs code on this machine.
+- It prints nothing when everything matches, and never changes the exit code (`doctor remediate` does not install either).
+- The live file already has this machine's override applied, so a plugin an override turns off is not listed. To keep a plugin off one machine, set it to `false` in `~/.claude/settings.json` there and run `claude-sync.sh override add '.enabledPlugins["example-plugin@example-marketplace"]'`.
+- `claude-plugins-official` is added by Claude Code itself on the first interactive session; doctor gives `claude plugin marketplace add anthropics/claude-plugins-official` when it is missing.
+- A marketplace whose source the CLI would misread (a `git` URL without `.git` on a host other than GitHub or GitLab, an inline `settings` source) gets a note instead of a command. Claude Code clones declared marketplaces itself after a session starts.
+- Plugins enabled as `<name>@synced` come from the claude.ai account and are not checked.
+- If either plugin file is not JSON or not in a shape this tool knows (Claude Code can change it between versions), doctor prints one "Plugin check skipped" line and goes on.
+- Inside a session, `/plugin marketplace add <source>` and `/plugin install <name>@<marketplace>` do the same.
+
+To have the tool run them for you, opt in with `install-plugins`:
+
+```bash
+~/claude-config/claude-sync.sh doctor install-plugins        # shows the commands, asks y/N
+~/claude-config/claude-sync.sh doctor install-plugins --yes  # no question; read the list first
+```
+
+- It works out the same list as `doctor`, prints the exact commands and the `claude` it found on `PATH`, then asks. Anything but `y` or `yes` stops with nothing run.
+- Without a terminal (a hook, a pipe) it refuses unless you pass `--yes`.
+- It runs every `marketplace add` first, then every `install`, one at a time, with no shell. At the first failure it stops, lists what succeeded and what was not run, and exits non-zero. Fix the cause and run it again; what is installed by then is no longer listed.
+- It skips what `doctor` only notes (a marketplace with no add command, a plugin whose marketplace is not declared), `@synced` plugins, `claudeai-` marketplaces, and any name it could not run exactly as shown (control characters, a leading `-`, or characters the Windows shell would read). Each skip is listed; skips do not change the exit code.
+- If `claude` is not on `PATH` it says so and exits non-zero. If a plugin file is in an unknown shape it installs nothing and exits non-zero.
+- It does not take the sync lock and does not change the clone. Start a new Claude Code session afterwards to load the plugins.
+
 ## Clone a profile as an independent copy
 
 The copy diverges from the original afterwards. It also copies the source's settings override.
@@ -79,7 +113,7 @@ Put the file under `machines/<profile>/agents/`, `hooks/` or `skills/`, or add `
 
 ## Share a machine's changes
 
-`sync` puts this machine's changes on `sync/<hostname>` and opens a PR for it (it needs `gh`, logged in; `CLAUDE_SYNC_GH=<path>` picks the binary and `CLAUDE_SYNC_GH_REPO=owner/repo` the repo when origin's URL doesn't show it; `CLAUDE_SYNC_LOCK_WAIT=<seconds>` sets how long a second run waits for the lock; `CLAUDE_SYNC_FLOCK` is gone, see `docs/python-port.md`). Review and merge the PR; every machine picks it up on its next `sync` or `pull`. Later syncs from the same machine update the same PR. If `gh` is missing or not logged in, the branch is still pushed and the error prints the `gh pr create` command to run by hand.
+`sync` puts this machine's changes on `sync/<hostname>` and opens a PR for it (it needs `gh`, logged in; `CLAUDE_SYNC_GH=<path>` picks the binary and `CLAUDE_SYNC_GH_REPO=owner/repo` the repo when origin's URL doesn't show it; `CLAUDE_SYNC_LOCK_WAIT=<seconds>` sets how long a second run waits for the lock; `CLAUDE_SYNC_BACKUPS=<n>` how many apply backups are kept, see "Restore a file from an apply backup"; `CLAUDE_SYNC_FLOCK` is gone, see `docs/python-port.md`). Review and merge the PR; every machine picks it up on its next `sync` or `pull`. Later syncs from the same machine update the same PR. If `gh` is missing or not logged in, the branch is still pushed and the error prints the `gh pr create` command to run by hand.
 
 To drop a machine's pending changes instead: close the PR, delete the branch on GitHub, then on that machine:
 
@@ -116,9 +150,56 @@ A real content conflict is reported, not guessed at: this machine's pending chan
 
 "Unable to create '….lock': File exists" (for example `.git/index.lock` or `.git/refs/remotes/origin/<branch>.lock`): a run stopped while git was writing left git's own lock behind. Since a SIGTERM, SIGHUP or Ctrl-C now lets git finish first (`docs/risks.md` row 35), this is mostly after a power loss, a SIGKILL, or the Windows hook timeout. Once no `claude-sync` and no other git command is running in the clone, delete that `.lock` file and re-run.
 
+"… is a link or not a folder, so apply cannot keep backups there": `~/.claude/.claude-sync-backups` is a link, a junction or a file. Nothing was changed. Move it out of the way so the next apply can make a real folder (or set `CLAUDE_SYNC_BACKUPS=0` to make no backups), then re-run.
+
+"warning: N backup folders in …, more than CLAUDE_SYNC_BACKUPS=…": pruning could not remove an old backup folder (usually a file in use on Windows). Close what holds it and delete the oldest folders by hand; the apply itself succeeded.
+
 "sync SKIPPED": the clone is on a branch other than its default branch, so nothing was captured. Switch it back (`git -C ~/claude-config switch <default>`), or develop in a separate worktree.
 
 A merged PR whose branch GitHub kept is ignored: the machine remembers the tip it last pushed, and a fresh clone checks with `gh` for a merged or closed PR at that tip. The next change replaces that branch and opens a new PR.
+
+## A session starts with a `claude-config:` line
+
+The third `SessionStart` hook runs `claude-sync.sh status --line --json`, which prints something only when this machine needs attention; a healthy machine prints nothing. Plain `SessionStart` stdout is added to the session's context for Claude only, so the hook prints one JSON object instead: `systemMessage` shows the line to you and `hookSpecificOutput.additionalContext` gives the same line to Claude. This was checked against the Claude Code hooks docs (https://code.claude.com/docs/en/hooks). Run `claude-sync.sh status --line` by hand for the plain line. It never fetches, never calls `gh`, never takes the lock and always exits 0, so it is safe beside a running sync. A session's hooks run side by side, so the line describes the state the previous run left, not this session's own sync (whose result shows as "Synced config loaded." or "claude-config sync failed").
+
+What the line can say, most urgent first (with "N more" when there is more than one):
+
+- "the last claude-config sync (SessionEnd) failed with exit N": read the end of `~/.claude/claude-config-sync.log`. Each hook run ends its entry with `claude-sync-hook: <event> exit=<code> <UTC time>`; exit 124 means the 20 s `timeout` stopped it. Fix the cause and run `claude-sync.sh sync`. The line goes when a later hook sync ends with `exit=0`. A sync you run by hand writes no result line.
+- "'claude-sync.sh doctor' reports a problem: …": the offline part of `doctor` (a stuck rebase, a hook that `settings.json` runs but that does not exist, a hook tracked without the exec bit, a too-long memory folder name). Run `doctor` for the details and the fix; see "A sync seems stuck". Drift between live files and the repo is left to `doctor`, since it can show mid-sync.
+- "this machine's changes on sync/<hostname> have waited over N days for their PR": merge or close the PR on GitHub, then run `sync`. The age is that of the local branch (its oldest reflog entry), so rebuilding it on a newer default branch does not reset it. `CLAUDE_SYNC_PR_DAYS=<days>` sets N (default 3, a whole number; 0 turns this check off). If the PR is already merged, the next sync deletes the branch and the line goes.
+- "the sync tier changed to basic" or "… to full": the `TIER=` line changed and the next sync switches (see "Choose or switch a sync tier"). After a switch to full, check the `memory/` diff of the next sync PR.
+- "the status check failed: …" or "no git repo at …": the check itself could not run (for example a bad `CLAUDE_SYNC_PR_DAYS`). Fix what it names.
+
+To turn the line off on one machine, delete that hook from the live `~/.claude/settings.json`, then run `claude-sync.sh override add '.hooks.SessionStart'`. That keeps this machine's whole `SessionStart` list as it is now, so later shared changes to that list no longer reach this machine.
+
+## Restore a file from an apply backup
+
+Before `sync`, `pull`, `bootstrap` or `doctor remediate` overwrites or deletes a local file whose bytes differ from what the apply ends up with, it copies the old file to `~/.claude/.claude-sync-backups/<UTC time>/` and prints `the old copies are in <folder>`. Paths inside a folder follow `~/.claude` (`CLAUDE.md`, `agents/x.md`, `projects/<encoded-path>/memory/x.md`); files from `~/.agents` go under `.agents/` (`.agents/skills/<name>/SKILL.md`). Folder names are UTC times (`20260101T120000.123456Z`), so the last one listed is the newest; `doctor` names it when it finds drift. Links are not backed up (removing a link loses no data).
+
+The newest 10 folders are kept, pruned after each successful apply. `CLAUDE_SYNC_BACKUPS=N` keeps N; `0` makes no new ones and leaves existing ones alone. A bad value (not a whole number) stops the command before anything changes. The folder is local only, mode 0700 on Linux and macOS, and is never captured, committed or published, but it can hold copies of secrets that were in synced files: delete it when you no longer need it.
+
+Copy a file back, then run `sync` if you want the edit shared (the next capture proposes it in this machine's PR):
+
+```bash
+ls ~/.claude/.claude-sync-backups/
+cp -p ~/.claude/.claude-sync-backups/<time>/agents/x.md ~/.claude/agents/x.md
+```
+
+PowerShell:
+
+```powershell
+Get-ChildItem "$HOME\.claude\.claude-sync-backups" | Sort-Object Name
+Copy-Item "$HOME\.claude\.claude-sync-backups\<time>\agents\x.md" "$HOME\.claude\agents\x.md"
+```
+
+Command Prompt:
+
+```bat
+dir /b /o:n "%USERPROFILE%\.claude\.claude-sync-backups"
+copy /y "%USERPROFILE%\.claude\.claude-sync-backups\<time>\agents\x.md" "%USERPROFILE%\.claude\agents\x.md"
+```
+
+A file a profile owns (`machines/<profile>/...`) is put back by the next apply unless the edit goes into the profile: restore it, then run `sync`, which writes it back into the profile. For `settings.json`, the backup is the merged file (shared plus this machine's override); copying it back and syncing splits the override out as usual.
 
 ## Choose or switch a sync tier
 

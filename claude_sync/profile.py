@@ -55,7 +55,7 @@ import tempfile
 from pathlib import Path
 
 from claude_sync import machineconf, overlay
-from claude_sync.syncfiles import TMP_SUFFIX, _copy_file, _remove, _warn, mirror, sync_capture
+from claude_sync.syncfiles import TMP_SUFFIX, Backup, _copy_file, _remove, _warn, mirror, sync_capture
 from claude_sync.util import Fail, check_real_dir
 
 KINDS = ("agents", "hooks", "skills")
@@ -366,24 +366,27 @@ def profile_append_block(data: bytes) -> bytes | None:
 # ── apply / unapply ──────────────────────────────────────────────────────
 
 
-def profile_unapply(claude_home: Path, agents_home: Path) -> None:
+def profile_unapply(claude_home: Path, agents_home: Path, backup: Backup | None = None) -> None:
     _guard(
         "remove the applied profile entries",
         "nothing in the repo was changed.",
-        _unapply, claude_home, agents_home,
+        _unapply, claude_home, agents_home, backup,
     )
 
 
-def _unapply(claude_home: Path, agents_home: Path) -> None:
+def _unapply(claude_home: Path, agents_home: Path, backup: Backup | None = None) -> None:
     """Before sync_apply: remove the live copies of the entries the last
     apply put in place, so sync_apply restores the shared version afresh.
-    The stamp itself stays until the next profile_apply."""
+    The stamp itself stays until the next profile_apply. With a backup, each
+    entry is saved first (backup.finish drops it if apply puts it back)."""
     stamp = profile_stamp_dir(claude_home)
     if not stamp.is_dir():
         return
     for kind in KINDS:
         live = profile_live_dir(claude_home, agents_home, kind)
         for name in profile_entries(stamp, kind):
+            if backup is not None:
+                backup.save(live / name)
             _remove(live / name)
 
 

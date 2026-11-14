@@ -351,11 +351,13 @@ Everything goes through one entry point. On Linux and macOS it is `claude-sync.s
 | `push` | Capture and push this machine's changes and open or update its PR. Does not apply. |
 | `pull` | Bring in the default branch (keeping this machine's unmerged changes) and apply it. |
 | `bootstrap` | The one-time first sync that `install` runs for you. |
-| `doctor` | Check for a stuck sync. Report only. |
-| `doctor remediate` | Check, and fix what is safe to fix. |
+| `doctor` | Check for a stuck sync, and list plugins to install. Report only. |
+| `doctor remediate` | Check, and fix what is safe to fix. Never installs plugins. |
+| `doctor install-plugins [--yes]` | Run the plugin commands `doctor` lists, marketplaces first, after a y/N prompt (`--yes` skips it). Stops at the first failure. |
 | `override list` / `add PATH` / `remove PATH` | Manage settings that stay on this machine only. |
 | `profile list` / `show NAME` / `use NAME` / `copy NAME` | Manage per-machine profiles. |
 | `tier` / `tier basic` / `tier full [PROJECT_PATH]` | Show or change what this machine syncs (see [Sync tiers](#sync-tiers)). |
+| `status --line [--json]` | One line when this machine needs attention, nothing when it is healthy. Local only and fast. `--json` prints it as one hook JSON object instead; the `SessionStart` hook runs that (see [How a change travels](#how-a-change-travels)). |
 
 ```bash
 ~/claude-config/claude-sync.sh sync                       # Linux / macOS
@@ -405,7 +407,9 @@ You rarely need these.
 | `CLAUDE_SYNC_GH_REPO` | `owner/repo`, if it cannot be worked out from the `origin` URL. |
 | `CLAUDE_SYNC_GH` | Path to a `gh` that is not on your `PATH`. |
 | `CLAUDE_SYNC_LOCK_WAIT` | Seconds a second run waits for the first (default 10, must be 0 or more). |
+| `CLAUDE_SYNC_BACKUPS` | How many apply backup folders to keep in `~/.claude/.claude-sync-backups/` (default 10, a whole number; 0 makes none and leaves existing ones alone). |
 | `CLAUDE_SYNC_HOSTNAME` | Override the machine name used for `sync/<hostname>`. |
+| `CLAUDE_SYNC_PR_DAYS` | Days this machine's sync PR may wait before `status --line` mentions it (default 3, a whole number; 0 turns that check off). |
 
 ## What syncs
 
@@ -427,6 +431,8 @@ On Windows `~` means `%USERPROFILE%`.
 They are synced but are not part of this template: the public mirror never ships the maintainer's copies, so your repo starts without them.
 
 **Never synced:** `.credentials.json`, `~/.claude.json`, plugin caches, and any session, task or security state.
+
+**Apply backups:** before `sync`, `pull`, `bootstrap` or `doctor remediate` overwrites or deletes a local file whose bytes differ from what it ends up with, the old file is copied to `~/.claude/.claude-sync-backups/<UTC time>/`, under its path in `~/.claude` (files from `~/.agents` go under `.agents/`). A run that changes nothing makes no folder. The newest 10 are kept (`CLAUDE_SYNC_BACKUPS`). The folder is local only (mode 0700 on Linux and macOS), is never captured, committed or published, and may hold copies of secrets from synced files. Restore steps are in [`docs/runbook.md`](docs/runbook.md).
 
 > [!WARNING]
 > Hook scripts run automatically (they are wired up through `settings.json`). A merged change to `dot-claude/hooks/` takes effect on every machine at its next sync. Review hook changes in the PR like any other code.
@@ -451,7 +457,9 @@ Switching never deletes anything. Going to `basic` leaves `memory/` in the repo 
 3. You **merge** the PR.
 4. **Machine B** gets it on its next `sync` or `pull`. Machine A drops its branch on its next sync.
 
-Sessions do steps 2 and 4 for you through the `SessionStart` and `SessionEnd` hooks. If a sync fails, the hooks log it to `~/.claude/claude-config-sync.log` and show "claude-config sync failed" without breaking your session.
+Sessions do steps 2 and 4 for you through the `SessionStart` and `SessionEnd` hooks. If a sync fails, the hooks log it to `~/.claude/claude-config-sync.log` and show "claude-config sync failed" without breaking your session. Each hook run ends its log entry with a result line (`claude-sync-hook: SessionEnd exit=1 <UTC time>`).
+
+A third `SessionStart` hook runs `claude-sync.sh status --line --json`. It shows one line to you and to Claude, and nothing when all is well, when: the last hook sync failed (so a failed `SessionEnd` sync is not missed), the offline part of `doctor` finds a problem, this machine's sync PR has waited more than `CLAUDE_SYNC_PR_DAYS` days (default 3), or the sync tier changed. It reads only local state (no fetch, no `gh`, no lock) and takes well under a second. Plain hook stdout reaches only Claude, so the hook prints a JSON object: `systemMessage` shows the line to you and `hookSpecificOutput.additionalContext` gives it to Claude (checked against the [hooks docs](https://code.claude.com/docs/en/hooks)). The session's hooks run side by side, so the line describes the state before that session's own sync.
 
 <details>
 <summary><b>More detail on the sync branch</b></summary>
@@ -517,6 +525,7 @@ A rebuilt machine with the **same hostname** just works, because its config and 
 | Symptom | Try this |
 |---|---|
 | Not sure what is wrong | `claude-sync.sh doctor`, then `doctor remediate` to fix what is safe. |
+| A session starts with a `claude-config:` line | `status --line` found something; the line says what to do. It goes once that is fixed and a sync has run. |
 | `gh` not found or not logged in | Install it and run `gh auth login`. Until then every sync pushes but cannot open a PR. |
 | `python3` / `py` not found, or "needs Python 3.12" | Install Python 3.12 or newer. On Windows the `py` launcher is best. |
 | Sync fails with "a real conflict" | Your pending changes and a merged change edited the same lines. The message says how to resolve or drop them. |
@@ -525,6 +534,8 @@ A rebuilt machine with the **same hostname** just works, because its config and 
 | Windows: pip install is refused | The installer retries once with `--user` by itself. |
 | Windows: `--repair` fails | Run `install.cmd --repair` from a prompt **outside** the clone (`cd /d %USERPROFILE%` first). |
 | Hook did not run on Linux after a Windows edit | `doctor` reports hooks committed without the exec bit; sync sets the bit on new hooks itself. |
+| Plugins show as enabled but are not installed (new or rebuilt machine) | `doctor` lists the `claude plugin marketplace add` and `claude plugin install` commands to run. It never runs them, and the exit code is unchanged. To run them, use `doctor install-plugins`: it shows them and asks first. Plugin code is not synced, only `settings.json`. |
+| A local edit was lost to `pull` or `sync` | Copy it back from the newest folder in `~/.claude/.claude-sync-backups/`; `doctor` names it when it finds drift. See `docs/runbook.md`. |
 | Something is badly broken | `install.sh --repair` (Windows: `install.cmd --repair`). It resets only this tool's own state, then sets up again. |
 
 Every failure prints what failed and what to do, on stderr, and exits non-zero.

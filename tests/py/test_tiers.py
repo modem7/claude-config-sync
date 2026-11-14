@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 from helpers import git, has_ref
-from test_doctor import run_doctor
+from test_doctor import install_plugins, run_doctor
 
 from claude_sync import gitflow, machineconf
 from claude_sync.machineconf import (
@@ -351,6 +351,7 @@ def test_doctor_on_basic_warns_about_an_agent_memory_plugin_but_passes(world):
         "plugin on, host-a basic",
     )
     a = world.machine("a")
+    install_plugins(a, "agent-memory@market", "other@market")
     rc, out = run_doctor(world, a)
     assert rc == 0, out
     assert "Sync tier: basic" in out
@@ -365,6 +366,7 @@ def test_doctor_on_full_does_not_warn_about_the_plugin(world):
         "plugin on",
     )
     a = world.machine("a")
+    install_plugins(a, "agent-memory@market")
     rc, out = run_doctor(world, a)
     assert rc == 0, out
     assert "Sync tier: full" in out and "WARNING" not in out

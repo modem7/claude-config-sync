@@ -38,6 +38,11 @@ changes or commits that are not on origin.
 the agent-memory plugin's pip packages), for a machine with no pip. The
 npm and gh steps still run. It works with --repair too.
 
+CLAUDE_SYNC_BACKUPS=N reaches the sync it hands over to: apply copies each
+local file it overwrites or deletes to ~/.claude/.claude-sync-backups/ and
+keeps the newest N folders (default 10; 0 makes none). A bad value is
+refused before anything is cloned or installed.
+
 Line endings: the clone is made with `git clone -c core.autocrlf=false`,
 which stays in the clone's config, so git never adds CRLF to synced files
 (Git for Windows usually sets autocrlf=true system-wide). A clone made
@@ -66,7 +71,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
-from claude_sync import cli, machineconf, profile, skilllinks, tools
+from claude_sync import cli, machineconf, profile, skilllinks, syncfiles, tools
 from claude_sync.gitflow import _git
 from claude_sync.syncfiles import _remove
 from claude_sync.util import Fail, check_real_dir, printable, redact, run
@@ -75,7 +80,9 @@ IS_WINDOWS = os.name == "nt"
 
 USAGE = (
     "Usage: install.sh [--repair|--reinstall] [--profile NAME] [--project-path PATH]"
-    " [--tier basic|full] [--skip-python-deps]"
+    " [--tier basic|full] [--skip-python-deps]\n"
+    "  CLAUDE_SYNC_BACKUPS=N: apply keeps the newest N backup folders of local files it"
+    " replaced, in ~/.claude/.claude-sync-backups/ (default 10; 0: none)."
 )
 _TOOL_STEPS = ("install_npm_tools", "install_gh_tools", "install_python_tools")
 
@@ -365,6 +372,7 @@ def _project_path(args: _Args, env: Mapping[str, str], home: Path, tier: str) ->
 
 def _main(argv: list[str], env: Mapping[str, str]) -> int:
     args = _parse(argv, env)
+    syncfiles.backups_from_env(env)  # refuse a bad value before any change
     url = _repo_url(env)
     home = _home(env)
     repo = Path(env.get("CLAUDE_SYNC_REPO_DIR") or home / "claude-config")

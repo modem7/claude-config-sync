@@ -18,19 +18,23 @@ can never silently break the sync. `mirror` stands in for `rsync -a
   bytes. Links to folders, dangling links and other special files are skipped
   with a warning, and the receiver's entry of the same name is left alone.
   On the receiving side, links and junctions are removed, never followed.
+- Apply can pass a Backup: each live file it is about to overwrite or delete
+  is copied there first (see Backup).
 """
 
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import stat
 import sys
 import tempfile
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
+from datetime import UTC, datetime
 from pathlib import Path
 
-from claude_sync.util import check_real_dir
+from claude_sync.util import Fail, check_real_dir
 
 GITKEEP = ".gitkeep"
 # Suffix of our own in-flight temp files. Leftovers (a killed run) are never
@@ -138,11 +142,234 @@ def _sweep_tmp(folder: Path, prefix: str = "") -> None:
         _remove(folder / name)
 
 
-def _copy_file(src: Path, dst: Path, *, delete: bool = True) -> None:
+# ── backups of what apply replaces ───────────────────────────────────────
+
+# The folder under the live Claude home that holds one folder per apply.
+# Nothing else reads it: capture copies only named files and folders.
+BACKUP_DIR = ".claude-sync-backups"
+DEFAULT_BACKUPS = 10
+# Run folder names: UTC time with microseconds, so names are unique and
+# sort by time. Prune touches only names of this shape.
+_RUN_NAME = re.compile(r"^\d{8}T\d{6}\.\d{6}Z$")
+
+
+def backups_from_env(env: Mapping[str, str]) -> int:
+    """How many backup folders to keep: CLAUDE_SYNC_BACKUPS, default 10.
+    0 turns backups off."""
+    raw = env.get("CLAUDE_SYNC_BACKUPS", "").strip()
+    if not raw:
+        return DEFAULT_BACKUPS
+    if not raw.isascii() or not raw.isdigit():
+        raise Fail(
+            f"CLAUDE_SYNC_BACKUPS must be a whole number, not '{raw}'.",
+            hint="  Set it to 0 (no backups) or more (for example 10), or unset it for the default.",
+        )
+    return int(raw)
+
+
+def _check_backup_root(root: Path) -> None:
+    """Fail unless root is missing or a real folder (never a link)."""
+    if os.path.lexists(root) and (
+        root.is_symlink() or root.is_junction() or not root.is_dir()
+    ):
+        raise Fail(
+            f"{root} is a link or not a folder, so apply cannot keep backups there.",
+            hint=f"  Move it out of the way (it must be a real folder or absent), or set"
+            " CLAUDE_SYNC_BACKUPS=0, then re-run. Nothing was changed.",
+        )
+    check_real_dir(root)
+
+
+def _private_dir(path: Path) -> None:
+    """mkdir with mode 0700 on POSIX, also when the folder exists."""
+    path.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if os.name == "posix":
+        os.chmod(path, 0o700)
+
+
+class Backup:
+    """Keeps a copy of each live file an apply overwrites or deletes.
+
+    Files go to <root>/<UTC time>/<path>, where <path> is relative to the
+    first matching home in `homes` with its prefix in front (the Claude home
+    has prefix "", ~/.agents has ".agents/"). The run folder is made only
+    when the first file is saved. Links are never followed: a link is not
+    saved (removing it loses no data) and a folder is walked without
+    following any link in it. Each path is saved once, so the first
+    (original) bytes win.
+
+    `finish` runs after the whole apply: a saved file whose live path now
+    holds the same bytes again (a settings override or profile layered back
+    on top) is dropped, so an unchanged apply leaves no folder.
+    """
+
+    def __init__(self, root: Path, homes: Sequence[tuple[Path, str]]) -> None:
+        self.root = Path(root)
+        self.homes = [(Path(h), prefix) for h, prefix in homes]
+        self.run: Path | None = None
+        self.saved: dict[str, Path] = {}
+
+    def check(self) -> None:
+        """Fail before apply changes anything if the root is a link."""
+        _check_backup_root(self.root)
+
+    def _rel(self, path: Path) -> str | None:
+        for home, prefix in self.homes:
+            try:
+                rel = Path(path).relative_to(home)
+            except ValueError:
+                continue
+            return prefix + rel.as_posix()
+        return None
+
+    def _run_dir(self) -> Path:
+        if self.run is None:
+            _check_backup_root(self.root)
+            _private_dir(self.root)
+            while True:
+                name = datetime.now(UTC).strftime("%Y%m%dT%H%M%S.%fZ")
+                run = self.root / name
+                try:
+                    run.mkdir(mode=0o700)
+                except FileExistsError:
+                    continue
+                break
+            if os.name == "posix":
+                os.chmod(run, 0o700)
+            self.run = run
+        return self.run
+
+    def _save_file(self, path: Path) -> None:
+        if _is_tmp(path.name):
+            return
+        rel = self._rel(path)
+        if rel is None:
+            _warn(f"not backed up (outside the synced homes): {path}")
+            return
+        if rel in self.saved:
+            return
+        run = self._run_dir()
+        target = run / rel
+        parent = target.parent
+        missing = []
+        while parent != run and not parent.exists():
+            missing.append(parent)
+            parent = parent.parent
+        for folder in reversed(missing):
+            _private_dir(folder)
+        shutil.copy2(path, target, follow_symlinks=False)
+        self.saved[rel] = Path(path)
+
+    def _save_tree(self, folder: Path) -> None:
+        with os.scandir(folder) as it:
+            entries = sorted(it, key=lambda e: e.name)
+        for entry in entries:
+            if entry.is_symlink() or entry.is_junction():
+                continue
+            if entry.is_dir(follow_symlinks=False):
+                self._save_tree(Path(entry.path))
+            elif entry.is_file(follow_symlinks=False):
+                self._save_file(Path(entry.path))
+
+    def save(self, path: Path) -> None:
+        """Copy path (a file, or every file under a folder) before it goes."""
+        path = Path(path)
+        if not os.path.lexists(path) or path.is_symlink() or path.is_junction():
+            return
+        st = os.lstat(path)
+        if stat.S_ISDIR(st.st_mode):
+            self._save_tree(path)
+        elif stat.S_ISREG(st.st_mode):
+            self._save_file(path)
+
+    def finish(self) -> Path | None:
+        """Drop copies whose live file holds the same bytes again, then empty
+        folders. Returns the run folder if anything is left, else None."""
+        if self.run is None:
+            return None
+        run = self.run
+        for rel, live in self.saved.items():
+            copy = run / rel
+            if (
+                os.path.lexists(live)
+                and not live.is_symlink()
+                and live.is_file()
+                and os.lstat(live).st_size == os.lstat(copy).st_size
+                and _same_bytes(live, copy)
+            ):
+                _remove(copy)
+        for dirpath, _dirs, _files in os.walk(run, topdown=False):
+            try:
+                os.rmdir(dirpath)
+            except OSError:
+                pass  # not empty
+        if not os.path.lexists(run):
+            self.run = None
+            return None
+        kept = sum(len(files) for _d, _s, files in os.walk(run))
+        print(
+            f"claude-sync: apply replaced or removed {kept} local file(s) that differed"
+            f" from the repo; the old copies are in {run}",
+            file=sys.stderr,
+        )
+        return run
+
+
+def backup_runs(root: Path) -> list[Path]:
+    """The run folders under root, oldest first. Links are not counted."""
+    root = Path(root)
+    if not root.is_dir() or root.is_symlink() or root.is_junction():
+        return []
+    with os.scandir(root) as it:
+        names = [
+            e.name
+            for e in it
+            if _RUN_NAME.match(e.name)
+            and e.is_dir(follow_symlinks=False)
+            and not e.is_junction()
+        ]
+    return [root / n for n in sorted(names)]
+
+
+def newest_backup(root: Path) -> Path | None:
+    runs = backup_runs(root)
+    return runs[-1] if runs else None
+
+
+def prune_backups(root: Path, keep: int) -> None:
+    """Remove all but the newest `keep` run folders. keep=0 (backups off)
+    leaves existing ones alone. A failure is a warning, never an error."""
+    if keep <= 0:
+        return
+    try:
+        runs = backup_runs(root)
+        for old in runs[:-keep]:
+            try:
+                _remove(old)
+            except OSError as err:
+                _warn(f"could not remove old backup {old}: {err}")
+        left = len(backup_runs(root))
+    except OSError as err:
+        _warn(f"could not prune backups in {root}: {err}")
+        return
+    if left > keep:
+        _warn(
+            f"{left} backup folders in {root}, more than CLAUDE_SYNC_BACKUPS={keep}."
+            " Remove the oldest by hand to free the space."
+        )
+
+
+# ── copying ──────────────────────────────────────────────────────────────
+
+
+def _copy_file(
+    src: Path, dst: Path, *, delete: bool = True, backup: Backup | None = None
+) -> None:
     """Copy src's bytes, mtime and mode to dst, atomically, unless they match.
 
     With delete=False a non-empty folder in the way is kept (with a warning)
-    instead of removed, as rsync -a without --delete does.
+    instead of removed, as rsync -a without --delete does. With a backup,
+    whatever dst held is saved there before it is replaced.
     """
     sst = os.stat(src)  # follows a source link to its file
     if os.path.lexists(dst):
@@ -160,6 +387,8 @@ def _copy_file(src: Path, dst: Path, *, delete: bool = True) -> None:
             or stat.S_ISDIR(dlst.st_mode)
             or dst.is_junction()
         ):
+            if backup is not None:
+                backup.save(dst)  # links are skipped, a folder's files kept
             _remove(dst)
         elif (
             stat.S_ISREG(dlst.st_mode)
@@ -171,6 +400,8 @@ def _copy_file(src: Path, dst: Path, *, delete: bool = True) -> None:
             if dlst.st_mtime_ns != sst.st_mtime_ns:
                 os.utime(dst, ns=(sst.st_atime_ns, sst.st_mtime_ns))
             return
+        elif backup is not None:
+            backup.save(dst)
     dst.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_name = tempfile.mkstemp(
         prefix=f".{dst.name}.", suffix=TMP_SUFFIX, dir=dst.parent
@@ -199,17 +430,21 @@ def _mirror(
     exclude: frozenset[str],
     exclude_anywhere: frozenset[str],
     nested: bool = False,
+    backup: Backup | None = None,
 ) -> None:
     """mirror() plus names excluded at every depth (rsync's unanchored pattern).
 
     A top-level dst that is a link to a folder is followed, as rsync does for
     `dst/`; inside the tree a link or file in the way of a folder is replaced.
+    With a backup, what is replaced or deleted in dst is saved there first.
     """
     if (
         nested
         and os.path.lexists(dst)
         and (dst.is_symlink() or dst.is_junction() or not dst.is_dir())
     ):
+        if backup is not None:
+            backup.save(dst)
         _remove(dst)
     dst.mkdir(parents=True, exist_ok=True)
     _sweep_tmp(dst)
@@ -224,7 +459,7 @@ def _mirror(
         source, target = Path(entry.path), dst / name
         if entry.is_symlink() or entry.is_junction():
             if not entry.is_junction() and entry.is_file():  # a link to a file
-                _copy_file(source, target, delete=delete)
+                _copy_file(source, target, delete=delete, backup=backup)
             else:
                 _warn(f"skipped link to a folder or missing target: {source}")
             continue
@@ -236,9 +471,10 @@ def _mirror(
                 exclude=frozenset(),
                 exclude_anywhere=exclude_anywhere,
                 nested=True,
+                backup=backup,
             )
         elif entry.is_file(follow_symlinks=False):
-            _copy_file(source, target, delete=delete)
+            _copy_file(source, target, delete=delete, backup=backup)
         else:
             _warn(f"skipped special file: {source}")
 
@@ -253,6 +489,8 @@ def _mirror(
             and e.name not in exclude_anywhere
         ]
     for name in stale:
+        if backup is not None:
+            backup.save(dst / name)
         _remove(dst / name)
 
 
@@ -357,8 +595,12 @@ def sync_apply(
     profile_excludes: Mapping[str, Iterable[str]] | None = None,
     memory_dir: Path | None,
     memory_mirror: bool | None = None,
+    backup: Backup | None = None,
 ) -> None:
     """Copy repo config out to the live paths (bash sync_apply).
+
+    With a backup, every live file this overwrites with other bytes or
+    deletes is copied into it first (the caller runs backup.finish).
 
     mirror=True makes agents, hooks, rules, commands, skills and memory an
     exact copy of the repo, deleting local-only entries (steady state).
@@ -384,7 +626,7 @@ def sync_apply(
         memory_dir.mkdir(parents=True, exist_ok=True)
     for live, in_repo in _FILES:
         if (repo / in_repo).is_file():
-            _copy_file(repo / in_repo, claude_home / live)
+            _copy_file(repo / in_repo, claude_home / live, backup=backup)
         _sweep_tmp(claude_home, f".{live}.")
     for kind, live, in_repo in _pairs(claude_home, agents_home, repo):
         if in_repo.is_dir():
@@ -394,6 +636,7 @@ def sync_apply(
                 delete=mirror,
                 exclude=_kind_excludes(profile_excludes, kind),
                 exclude_anywhere=frozenset(),
+                backup=backup,
             )
     if memory_dir is not None and (repo / "memory").is_dir():
         _mirror(
@@ -402,6 +645,7 @@ def sync_apply(
             delete=mirror if memory_mirror is None else memory_mirror,
             exclude=frozenset(),
             exclude_anywhere=frozenset(),
+            backup=backup,
         )
 
 

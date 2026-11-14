@@ -4,13 +4,14 @@ Port of main() and usage() in claude-sync.sh. `main` only works out the
 run's settings, picks the command and turns how it ended into an exit
 code; the work is in gitflow, pr and doctor.
 
-    push | pull | sync | bootstrap | doctor [remediate]
+    push | pull | sync | bootstrap | doctor [remediate | install-plugins [--yes]]
     override add|remove|list [PATH]
     profile list | show NAME | copy FROM [--force] [--yes] | use NAME
     tier [show | basic | full [PROJECT_PATH]]
+    status --line [--json]
 
 No command means `sync`. Settings come from `env` (CLAUDE_SYNC_REPO_DIR,
-_CLAUDE_HOME, _AGENTS_HOME, _HOSTNAME, _LOCK_WAIT). pr.py does not see
+_CLAUDE_HOME, _AGENTS_HOME, _HOSTNAME, _LOCK_WAIT, _BACKUPS, _PR_DAYS). pr.py does not see
 `env`: it reads CLAUDE_SYNC_GH and CLAUDE_SYNC_GH_REPO from os.environ at
 call time, and util.redact (used by pr and gitflow) reads GH_TOKEN,
 GITHUB_TOKEN, GH_ENTERPRISE_TOKEN and GITHUB_ENTERPRISE_TOKEN the same way. `python -m claude_sync` passes os.environ,
@@ -19,13 +20,14 @@ so the two agree; an in-process caller must put those in os.environ.
 
 from __future__ import annotations
 
+import json
 import socket
 import sys
 from collections.abc import Mapping
 from contextlib import ExitStack
 from pathlib import Path
 
-from claude_sync import doctor, gitflow, pr, profile
+from claude_sync import doctor, gitflow, pr, profile, status, syncfiles
 from claude_sync.gitflow import SyncCtx
 from claude_sync.lock import lock_wait_from_env
 from claude_sync.util import Fail, UsageError, redact, run
@@ -33,9 +35,10 @@ from claude_sync.util import Fail, UsageError, redact, run
 # bash usage(), except that its two flock lines became one: there is no
 # CLAUDE_SYNC_FLOCK and no weaker fallback lock any more.
 USAGE = """\
-Usage: claude-sync.sh [push|pull|sync|bootstrap|doctor [remediate]|override add|remove|list [JQ_PATH]
+Usage: claude-sync.sh [push|pull|sync|bootstrap|doctor [remediate|install-plugins [--yes]]
+                       |override add|remove|list [JQ_PATH]
                        |profile list|show NAME|copy FROM [--force] [--yes]|use NAME
-                       |tier [show|basic|full [PROJECT_PATH]]]
+                       |tier [show|basic|full [PROJECT_PATH]]|status --line [--json]]
   sync       capture local changes onto sync/<hostname>, merge the default branch in, apply, push, open/update its PR
   push       capture onto sync/<hostname>, push it and open/update its PR (no apply)
   pull       bring in the default branch (keeping this machine's unmerged changes) and apply
@@ -43,11 +46,20 @@ Usage: claude-sync.sh [push|pull|sync|bootstrap|doctor [remediate]|override add|
   The PR step needs gh, logged in. CLAUDE_SYNC_GH=<path> picks the gh binary;
   CLAUDE_SYNC_GH_REPO=owner/repo sets the repo when origin's URL doesn't show it.
   Needs git 2.40+. A second run waits CLAUDE_SYNC_LOCK_WAIT seconds (default 10) for the first.
+  Before apply overwrites or deletes a local file that differs, it copies it to
+  ~/.claude/.claude-sync-backups/<UTC time>/. CLAUDE_SYNC_BACKUPS=N keeps the newest N (default 10; 0: none).
   e.g. claude-sync.sh override add '.enabledPlugins["name@marketplace"]'
        claude-sync.sh profile use other-host   # follow machines/other-host/ (agents, hooks, skills, CLAUDE.md)
        claude-sync.sh tier basic               # stop syncing memory here (TIER= in machines/<hostname>.conf)
   tier: basic syncs CLAUDE.md, settings.json, agents, hooks and skills; full (the default) adds memory.
   'tier full' needs the primary project path once (PROJECT_PATH) if the conf has none.
+  status --line  one line when this machine needs attention (last hook sync failed, a doctor
+             problem, its PR waiting over CLAUDE_SYNC_PR_DAYS days (default 3; 0: off), a tier change),
+             else nothing. Local only (no fetch, no gh, no lock); always exits 0. The SessionStart hook runs it.
+             --json prints the line as one hook JSON object (systemMessage for you, additionalContext for Claude).
+  doctor install-plugins  run the claude plugin commands doctor lists (marketplaces first), after a
+             y/N prompt; --yes skips it, no terminal and no --yes is refused. Stops at the first failure.
+             Plain doctor and doctor remediate never install anything.
 """
 
 # Commands that capture, commit or push: only on the default branch.
@@ -133,6 +145,7 @@ def make_ctx(repo: Path, env: Mapping[str, str]) -> SyncCtx:
         agents_home=Path(agents),
         hostname=host,
         lock_wait=lock_wait_from_env(env),
+        backups=syncfiles.backups_from_env(env),
     )
     pr.bind_pr_state(ctx)
     return ctx
@@ -150,6 +163,8 @@ def _skip_message(repo: Path) -> str:
 
 
 def _main(argv: list[str], env: Mapping[str, str]) -> int:
+    if argv and argv[0] == "status":
+        return _status(argv[1:], env)
     repo = repo_dir(env)
     # A worktree's .git is a file, so any .git counts (bash: -d).
     if not (repo / ".git").exists():
@@ -199,6 +214,8 @@ def _main(argv: list[str], env: Mapping[str, str]) -> int:
             _profile(ctx, stack, args)
         elif cmd == "tier":
             _tier(ctx, stack, args)
+        elif cmd == "doctor" and sub == "install-plugins":
+            return doctor.install_plugins(ctx, args[1:])
         elif cmd == "doctor":
             return doctor.do_doctor(
                 ctx, stack, remediate=sub == "remediate", run_sync=lambda: _nested_sync(env)
@@ -206,6 +223,46 @@ def _main(argv: list[str], env: Mapping[str, str]) -> int:
         else:
             raise UsageError()
     return 0
+
+
+def _status(args: list[str], env: Mapping[str, str]) -> int:
+    """status --line [--json]: read-only, on any branch, never fails the
+    hook. A problem becomes the line itself rather than a stderr message.
+    --json wraps the line as a SessionStart hook object, so the user sees
+    it (systemMessage) as well as Claude (additionalContext); plain hook
+    stdout reaches Claude only. Healthy prints nothing either way."""
+    if args not in (["--line"], ["--line", "--json"]):
+        raise UsageError()
+    repo = repo_dir(env)
+    if not (repo / ".git").exists():
+        line = status.one_line([f"no git repo at {repo}. Run install.sh first."])
+    else:
+        try:
+            ctx = make_ctx(repo, env)
+        except Fail as err:
+            line = status.one_line([f"the status check failed: {err.message}"])
+        else:
+            try:
+                line = status.status_line(ctx, env)
+            except Exception as err:  # noqa: BLE001 - the hook must still get its one line
+                line = status.one_line(
+                    [f"the status check hit an unexpected error ({type(err).__name__}). Run 'claude-sync.sh doctor'."]
+                )
+    if line and "--json" in args:
+        print(hook_json(line))
+    elif line:
+        print(line)
+    return 0
+
+
+def hook_json(line: str) -> str:
+    """The line as one SessionStart hook JSON object, ASCII only."""
+    return json.dumps(
+        {
+            "systemMessage": line,
+            "hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": line},
+        }
+    )
 
 
 def _nested_sync(env: Mapping[str, str]) -> bool:
