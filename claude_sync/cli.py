@@ -7,6 +7,7 @@ code; the work is in gitflow, pr and doctor.
     push | pull | sync | bootstrap | doctor [remediate]
     override add|remove|list [PATH]
     profile list | show NAME | copy FROM [--force] [--yes] | use NAME
+    tier [show | basic | full [PROJECT_PATH]]
 
 No command means `sync`. Settings come from `env` (CLAUDE_SYNC_REPO_DIR,
 _CLAUDE_HOME, _AGENTS_HOME, _HOSTNAME, _LOCK_WAIT). pr.py does not see
@@ -33,7 +34,8 @@ from claude_sync.util import Fail, UsageError, redact, run
 # CLAUDE_SYNC_FLOCK and no weaker fallback lock any more.
 USAGE = """\
 Usage: claude-sync.sh [push|pull|sync|bootstrap|doctor [remediate]|override add|remove|list [JQ_PATH]
-                       |profile list|show NAME|copy FROM [--force] [--yes]|use NAME]
+                       |profile list|show NAME|copy FROM [--force] [--yes]|use NAME
+                       |tier [show|basic|full [PROJECT_PATH]]]
   sync       capture local changes onto sync/<hostname>, merge the default branch in, apply, push, open/update its PR
   push       capture onto sync/<hostname>, push it and open/update its PR (no apply)
   pull       bring in the default branch (keeping this machine's unmerged changes) and apply
@@ -43,10 +45,13 @@ Usage: claude-sync.sh [push|pull|sync|bootstrap|doctor [remediate]|override add|
   Needs git 2.40+. A second run waits CLAUDE_SYNC_LOCK_WAIT seconds (default 10) for the first.
   e.g. claude-sync.sh override add '.enabledPlugins["name@marketplace"]'
        claude-sync.sh profile use other-host   # follow machines/other-host/ (agents, hooks, skills, CLAUDE.md)
+       claude-sync.sh tier basic               # stop syncing memory here (TIER= in machines/<hostname>.conf)
+  tier: basic syncs CLAUDE.md, settings.json, agents, hooks and skills; full (the default) adds memory.
+  'tier full' needs the primary project path once (PROJECT_PATH) if the conf has none.
 """
 
 # Commands that capture, commit or push: only on the default branch.
-_BRANCH_BOUND = ("push", "sync", "bootstrap", "override", "profile")
+_BRANCH_BOUND = ("push", "sync", "bootstrap", "override", "profile", "tier")
 _SIGNAL_EXITS = {129: "SIGHUP", 130: "Ctrl-C", 143: "SIGTERM"}
 
 
@@ -155,8 +160,10 @@ def _main(argv: list[str], env: Mapping[str, str]) -> int:
     # The capture and PR flow only runs with the clone on its default
     # branch. Any other branch means this clone is being used to develop
     # the sync tool itself, so skip rather than mix local config into that
-    # work. profile list/show only read, so they work on any branch.
-    read_only = cmd == "profile" and (sub or "list") in ("list", "show")
+    # work. profile list/show and tier show only read, so they work on any branch.
+    read_only = (cmd == "profile" and (sub or "list") in ("list", "show")) or (
+        cmd == "tier" and (sub or "show") == "show"
+    )
     if cmd in _BRANCH_BOUND and not read_only and not gitflow.on_default_branch(repo):
         print(_skip_message(repo), file=sys.stderr)
         return 0
@@ -190,6 +197,8 @@ def _main(argv: list[str], env: Mapping[str, str]) -> int:
             _override(ctx, stack, args)
         elif cmd == "profile":
             _profile(ctx, stack, args)
+        elif cmd == "tier":
+            _tier(ctx, stack, args)
         elif cmd == "doctor":
             return doctor.do_doctor(
                 ctx, stack, remediate=sub == "remediate", run_sync=lambda: _nested_sync(env)
@@ -233,5 +242,17 @@ def _profile(ctx: SyncCtx, stack: ExitStack, args: list[str]) -> None:
         doctor.profile_use(ctx, stack, name)
     elif action == "copy":
         doctor.profile_copy(ctx, stack, args[1:])
+    else:
+        raise UsageError()
+
+
+def _tier(ctx: SyncCtx, stack: ExitStack, args: list[str]) -> None:
+    action = args[0] if args else "show"
+    if action == "show" and len(args) <= 1:
+        doctor.tier_show(ctx)
+    elif action == "basic" and len(args) == 1:
+        doctor.tier_use(ctx, stack, action)
+    elif action == "full" and len(args) <= 2:
+        doctor.tier_use(ctx, stack, action, args[1] if len(args) > 1 else None)
     else:
         raise UsageError()

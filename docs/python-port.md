@@ -59,6 +59,7 @@ The bash is the baseline: anything not listed here behaves the same.
 ### install
 
 - It runs the sync in the same process, and the tool steps from the package, not the new clone's `claude-sync.sh` and `*-tools.sh`.
+- New, not in the bash: `--tier basic|full` (`CLAUDE_SYNC_TIER`). On `basic` only the gh step runs (`_tool_steps`) and no project path is asked for. The tier is worked out before the tool steps, so the `machines/` link check now runs before them too. `claude-sync.sh tier` changes it later; see `docs/runbook.md`.
 - `--repair` refuses more. It does not delete a repo folder that is a link or junction, a non-empty folder that is not a clone, the home folder, or a folder that holds `~/.claude` or `~/.agents`. It also refuses when `git status` fails.
 - The hostname is checked with the profile-name rules before it names `machines/<hostname>.conf`.
 - The clone is made with `-c core.autocrlf=false`. A failed clone says `Could not clone the sync repo into DIR.` with git's error redacted. The URL is never printed.

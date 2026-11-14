@@ -202,18 +202,138 @@ def require_project_path(ctx: SyncCtx) -> str:
     project = machineconf.read_primary_project_path(ctx.repo, ctx.hostname)
     if project is None:
         conf = machineconf.machine_conf_path(ctx.repo, ctx.hostname)
+        if conf.is_file():
+            raise Fail(
+                f"{conf} has no PRIMARY_PROJECT_PATH= line, which the full sync tier needs"
+                " to find the memory folder.",
+                hint=f"  Add PRIMARY_PROJECT_PATH=/absolute/path/of/your/project to {conf},"
+                " or set TIER=basic there to sync without memory, then re-run.",
+            )
         raise Fail(f"No machine config at {conf}. Run install.sh first.")
     return project
 
 
 def memory_dir_of(ctx: SyncCtx) -> Path:
-    """The memory folder; warns once per run when its name is very long."""
+    """The memory folder; warns once per run when its name is very long.
+    Only for a step that syncs memory (memory_mode is not MEMORY_OFF): a
+    basic machine's conf may have no project path."""
     project = require_project_path(ctx)
     warning = long_name_warning(project)
     if warning and not ctx._long_path_warned:
         ctx._long_path_warned = True
         print(f"claude-sync: warning: {warning}", file=sys.stderr)
     return resolve_memory_dir(ctx.claude_home, project)
+
+
+# ── sync tier ────────────────────────────────────────────────────────────
+# How a step treats memory, from the tier and the local tier record. Worked
+# out afresh by each step (like current_profile), since an integrate can
+# bring in a changed TIER= line in the middle of a run.
+MEMORY_ON = "on"  # full tier: memory captured and applied with delete (as before tiers)
+MEMORY_OFF = "off"  # basic tier: memory/ and the local memory folder left alone
+MEMORY_ADOPT = "adopt"  # full tier after basic: memory merged both ways, nothing deleted
+
+
+def current_tier(ctx: SyncCtx) -> str:
+    """TIER= in this machine's conf ('full' without one). Read afresh each
+    time, since a pull or 'tier' can change it."""
+    return machineconf.read_machine_tier(ctx.repo, ctx.hostname)
+
+
+def applied_tier_stamp(ctx: SyncCtx) -> Path:
+    """Local-only record that a basic-tier run left memory alone: holds
+    'basic', then 'merged' once a full-tier apply has merged the repo's
+    memory in. Removed by the first full-tier capture that adopted memory.
+    Missing means full, so every machine from before tiers syncs as it
+    did. In CLAUDE_HOME but outside everything sync_capture copies."""
+    return ctx.claude_home / ".claude-sync-applied-tier"
+
+
+def memory_backup_root(ctx: SyncCtx) -> Path:
+    """Where memory adoption keeps a copy of each local memory file it is
+    about to overwrite with the repo's version."""
+    return ctx.claude_home / ".claude-sync-memory-backup"
+
+
+def memory_mode(ctx: SyncCtx) -> str:
+    """MEMORY_OFF on the basic tier. On the full tier MEMORY_ADOPT while the
+    local record says the last run was basic, else MEMORY_ON."""
+    if current_tier(ctx) == machineconf.TIER_BASIC:
+        return MEMORY_OFF
+    stamp = applied_tier_stamp(ctx)
+    if _tier_record(ctx) in (machineconf.TIER_BASIC, _MERGED):
+        return MEMORY_ADOPT
+    return MEMORY_ON
+
+
+_MERGED = "merged"
+
+
+def _tier_record(ctx: SyncCtx) -> str:
+    stamp = applied_tier_stamp(ctx)
+    if not stamp.is_file():
+        return ""
+    return stamp.read_text(encoding="utf-8", errors="replace").strip()
+
+
+def _memory_dir_for(ctx: SyncCtx, mode: str) -> Path | None:
+    return None if mode == MEMORY_OFF else memory_dir_of(ctx)
+
+
+def _write_tier_record(ctx: SyncCtx, value: str) -> None:
+    stamp = applied_tier_stamp(ctx)
+    data = f"{value}\n".encode()
+    if not (stamp.is_file() and stamp.read_bytes() == data):
+        _write_atomic(stamp, data)
+
+
+def _record_memory_off(ctx: SyncCtx) -> None:
+    _write_tier_record(ctx, machineconf.TIER_BASIC)
+
+
+def _record_memory_merged(ctx: SyncCtx) -> None:
+    """An adopting apply merged the repo's memory in: a later capture must
+    not merge again, or it would undo local edits made since."""
+    _write_tier_record(ctx, _MERGED)
+
+
+def _end_memory_adoption(ctx: SyncCtx) -> None:
+    applied_tier_stamp(ctx).unlink(missing_ok=True)
+
+
+def _backup_memory_clashes(ctx: SyncCtx, memory_dir: Path) -> None:
+    """Copies each local memory file that the repo's memory/ holds with
+    other bytes (what a non-deleting apply would overwrite) to a new folder
+    under memory_backup_root, and says where."""
+    clashes = syncfiles.differing_files(ctx.repo / "memory", memory_dir)
+    if not clashes:
+        return
+    root = memory_backup_root(ctx)
+    root.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    dest = Path(tempfile.mkdtemp(prefix=f"{stamp}-", dir=root))
+    for rel in clashes:
+        target = dest / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(memory_dir / rel, target)
+    print(
+        f"claude-sync: memory sync starts on this machine; {len(clashes)} local memory file(s)"
+        f" differ from the shared copy, which wins. Local versions kept in {dest}",
+        file=sys.stderr,
+    )
+
+
+def _adopt_memory(ctx: SyncCtx, memory_dir: Path) -> None:
+    """First full-tier capture after basic, as bootstrap does: the repo's
+    memory is merged into the local folder first (nothing local deleted;
+    a same-named file takes the repo's version, the local one backed up),
+    so the capture after it adds local-only files without deleting or
+    blindly replacing shared ones."""
+    shared = ctx.repo / "memory"
+    if not shared.is_dir():
+        return
+    _backup_memory_clashes(ctx, memory_dir)
+    syncfiles.mirror(shared, memory_dir, delete=False)
 
 
 def parse_git_version(text: str) -> tuple[int, int] | None:
@@ -738,10 +858,12 @@ def _export_commit(ctx: SyncCtx, sha: str, dest: Path, scratch: Path) -> None:
             )
 
 
-def live_matches_commit(ctx: SyncCtx, sha: str, memory_dir: Path) -> bool:
+def live_matches_commit(ctx: SyncCtx, sha: str, memory_dir: Path | None) -> bool:
     """True when the live config is exactly what a clean apply of `sha`
     would have left, i.e. nothing was edited locally since. The capture
-    into the scratch tree is the same one a real capture does."""
+    into the scratch tree is the same one a real capture does.
+    memory_dir=None leaves memory out of the comparison (basic tier, and
+    memory adoption): the commit's memory/ is copied as is on both sides."""
     with tempfile.TemporaryDirectory(prefix="claude-sync-") as tmp_name:
         tmp = Path(tmp_name)
         applied, live = tmp / "applied", tmp / "live"
@@ -766,7 +888,13 @@ def live_matches_commit(ctx: SyncCtx, sha: str, memory_dir: Path) -> bool:
         return _same_tree(applied, live)
 
 
-def check_capture_is_safe(ctx: SyncCtx, memory_dir: Path) -> bool:
+def _tree_without_memory(ctx: SyncCtx, rev: str) -> str:
+    """The top level of `rev`'s tree with the memory/ entry left out."""
+    out = _out(ctx, "ls-tree", "-z", rev)
+    return "\0".join(r for r in out.split("\0") if r and r.split("\t", 1)[-1] != "memory")
+
+
+def check_capture_is_safe(ctx: SyncCtx, memory_dir: Path | None) -> bool:
     """True to capture, False to skip capture (live is stale but unmodified,
     so integrate and apply bring it up to date). Raises Fail when live has
     local edits AND the clone moved, which needs a human.
@@ -775,6 +903,9 @@ def check_capture_is_safe(ctx: SyncCtx, memory_dir: Path) -> bool:
     files are older than the clone's effective state: it would commit the
     stale files over newer work. Trees are compared, not commit ids,
     because each sync rebuilds the sync branch's commit.
+
+    memory_dir=None (basic tier, memory adoption) leaves memory out: a
+    clone that moved only in memory/ counts as not moved.
     """
     stamp = applied_commit_stamp(ctx)
     if not stamp.is_file():
@@ -798,6 +929,8 @@ def check_capture_is_safe(ctx: SyncCtx, memory_dir: Path) -> bool:
             ),
         )
     if tree_of(ctx, sha) == tree_of(ctx, eff):
+        return True
+    if memory_dir is None and _tree_without_memory(ctx, sha) == _tree_without_memory(ctx, eff):
         return True
     if live_matches_commit(ctx, sha, memory_dir):
         print(
@@ -944,13 +1077,20 @@ def _restore_shared_settings(shared: Path, committed: Path | None) -> None:
         )
 
 
-def do_capture_and_commit(ctx: SyncCtx) -> None:
+def do_capture_and_commit(ctx: SyncCtx) -> bool:
     """Captures the live config into the clone and commits it onto the sync
-    branch, then records it as applied. Skips (returns) when live is stale
-    but unmodified; raises Fail when that is not safe to tell."""
-    memory_dir = memory_dir_of(ctx)
-    if not check_capture_is_safe(ctx, memory_dir):
-        return
+    branch, then records it as applied. Skips (returns False) when live is
+    stale but unmodified; raises Fail when that is not safe to tell.
+
+    Memory follows memory_mode: left out entirely on the basic tier; on the
+    first full-tier capture after basic, adopted (_adopt_memory) and
+    copied in without deleting, after which the tier record is dropped."""
+    mode = memory_mode(ctx)
+    memory_dir = _memory_dir_for(ctx, mode)
+    if mode == MEMORY_OFF:
+        _record_memory_off(ctx)
+    if not check_capture_is_safe(ctx, memory_dir if mode == MEMORY_ON else None):
+        return False
 
     # With an override, local settings.json = shared * override, so it can't
     # be copied into the shared file verbatim: keep the shared file as it
@@ -977,12 +1117,17 @@ def do_capture_and_commit(ctx: SyncCtx) -> None:
             # What the last apply layered on. No record means nothing was:
             # local lacking an override key then means "not applied yet".
             override_before.write_bytes(stamp.read_bytes() if stamp.is_file() else b"{}\n")
+        if mode == MEMORY_ADOPT and _tier_record(ctx) == machineconf.TIER_BASIC:
+            # Only when no adopting apply merged it in yet. Local only: the
+            # clone is not touched until profile_capture.
+            _adopt_memory(ctx, memory_dir)
 
         try:
             # Profile-owned entries stay out of the shared copy; a local edit
             # to one goes back into machines/<profile>/ instead.
             profile.profile_capture(
-                ctx.repo, ctx.claude_home, ctx.agents_home, memory_dir, prof, True
+                ctx.repo, ctx.claude_home, ctx.agents_home, memory_dir, prof, True,
+                memory_delete=mode == MEMORY_ON,
             )
             if split:
                 overlay.split_files(
@@ -1000,6 +1145,10 @@ def do_capture_and_commit(ctx: SyncCtx) -> None:
     # Live now equals the effective state by construction, so a failed push
     # after this point must not later look like a stale clone.
     record_applied_commit(ctx)
+    if mode == MEMORY_ADOPT:
+        # Local memory is all in the commit now, so a mirroring apply loses nothing.
+        _end_memory_adoption(ctx)
+    return True
 
 
 def do_integrate(ctx: SyncCtx) -> None:
@@ -1082,13 +1231,18 @@ def expected_local_settings(ctx: SyncCtx) -> bytes:
     return shared.read_bytes()
 
 
-def apply_local_config(ctx: SyncCtx, memory_dir: Path, mirror: bool = True) -> None:
+def apply_local_config(
+    ctx: SyncCtx, memory_dir: Path | None, mirror: bool = True, memory_mirror: bool | None = None
+) -> None:
     """Every apply goes through here, so the profile is never left out.
-    Skill links are wired last, after profile-disabled skills are gone."""
+    Skill links are wired last, after profile-disabled skills are gone.
+    memory_dir=None leaves local memory alone (basic tier); memory_mirror
+    overrides `mirror` for memory only (see syncfiles.sync_apply)."""
     prof = current_profile(ctx)
     profile.profile_unapply(ctx.claude_home, ctx.agents_home)
     syncfiles.sync_apply(
-        ctx.repo, ctx.claude_home, ctx.agents_home, mirror=mirror, memory_dir=memory_dir
+        ctx.repo, ctx.claude_home, ctx.agents_home, mirror=mirror, memory_dir=memory_dir,
+        memory_mirror=memory_mirror,
     )
     apply_settings_overlay(ctx)
     profile.profile_apply(ctx.repo, ctx.claude_home, ctx.agents_home, prof)
@@ -1105,19 +1259,39 @@ def do_apply(ctx: SyncCtx) -> None:
     entry, which the next capture would write into the profile. A signal
     that arrived meanwhile ends the run afterwards with 130 / 143 / 129.
     Power loss is not covered.
+
+    Memory follows memory_mode: left alone on the basic tier, merged in
+    without deleting while adopting it after a switch to full.
     """
-    memory_dir = memory_dir_of(ctx)
+    mode = memory_mode(ctx)
+    memory_dir = _memory_dir_for(ctx, mode)
+    if mode == MEMORY_ADOPT:
+        _backup_memory_clashes(ctx, memory_dir)
     with _signals_held() as caught:
-        apply_local_config(ctx, memory_dir)
+        apply_local_config(
+            ctx, memory_dir, memory_mirror=False if mode == MEMORY_ADOPT else None
+        )
         record_applied_commit(ctx, new_process_group=_HELD_GROUP)
+        if mode == MEMORY_OFF:
+            _record_memory_off(ctx)
+        elif mode == MEMORY_ADOPT:
+            _record_memory_merged(ctx)
     _exit_if_caught(caught)
 
 
 def do_apply_merge(ctx: SyncCtx) -> None:
     """Non-destructive apply for a machine's first-ever sync: merges the
     repo's shared config into local paths without deleting local-only
-    entries. Records nothing, as bash. Signals are held off as in do_apply."""
-    memory_dir = memory_dir_of(ctx)
+    entries. Records nothing, as bash, except the basic tier's record that
+    memory was left alone. Signals are held off as in do_apply."""
+    mode = memory_mode(ctx)
+    memory_dir = _memory_dir_for(ctx, mode)
+    if mode == MEMORY_ADOPT:
+        _backup_memory_clashes(ctx, memory_dir)
     with _signals_held() as caught:
         apply_local_config(ctx, memory_dir, mirror=False)
+        if mode == MEMORY_OFF:
+            _record_memory_off(ctx)
+        elif mode == MEMORY_ADOPT:
+            _record_memory_merged(ctx)
     _exit_if_caught(caught)

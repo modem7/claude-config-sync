@@ -1,9 +1,9 @@
 """The installer: `python -m claude_sync.install [--repair|--reinstall]
-[--profile NAME] [--project-path PATH]`.
+[--profile NAME] [--project-path PATH] [--tier basic|full]`.
 
 Port of install.sh. It clones the sync repo (CLAUDE_SYNC_REPO_URL, else a
 prompt on a terminal) into CLAUDE_SYNC_REPO_DIR (default ~/claude-config),
-provisions the companion tools (claude_sync.tools), writes
+provisions the companion tools the tier needs (claude_sync.tools), writes
 machines/<hostname>.conf on a new machine, then hands over to the sync
 tool: `bootstrap` for a new machine, `sync` when the conf already existed.
 That first sync goes out on sync/<hostname> with its PR, like any other;
@@ -19,6 +19,13 @@ creation (a terminal asks `Create it? [y/N]`), then falls back to the home
 directory (resolve_project_path).
 That fallback is Windows-only on purpose: elsewhere the path is stored as
 given, as install.sh did, even when it does not exist yet.
+
+--tier basic|full (or CLAUDE_SYNC_TIER; default full) picks what a new
+machine syncs: TIER=basic goes into the new conf. basic syncs CLAUDE.md,
+settings.json, agents, hooks and skills, installs only gh, and needs no
+project path (none is asked for; one given by flag or env is still
+stored). full adds the memory folder, the python packages and the npm
+tools. An existing conf keeps its tier; 'claude-sync.sh tier' changes it.
 
 --repair (alias --reinstall) resets this machine's own sync bookkeeping:
 the local clone, its machines/<hostname>.conf (rewritten; the change goes
@@ -62,7 +69,10 @@ from claude_sync.util import Fail, check_real_dir, printable, redact, run
 
 IS_WINDOWS = os.name == "nt"
 
-USAGE = "Usage: install.sh [--repair|--reinstall] [--profile NAME] [--project-path PATH]"
+USAGE = (
+    "Usage: install.sh [--repair|--reinstall] [--profile NAME] [--project-path PATH]"
+    " [--tier basic|full]"
+)
 _TOOL_STEPS = ("install_npm_tools", "install_gh_tools", "install_python_tools")
 
 
@@ -71,6 +81,7 @@ class _Args:
     repair: bool = False
     profile: str = ""
     project_path: str | None = None
+    tier: str = ""
 
 
 def resolve_project_path(preferred: str | None, home: Path) -> str:
@@ -111,25 +122,31 @@ def main(argv: list[str], env: Mapping[str, str]) -> int:
 
 
 def _parse(argv: list[str], env: Mapping[str, str]) -> _Args:
-    args = _Args(profile=env.get("CLAUDE_SYNC_PROFILE", ""))
+    args = _Args(profile=env.get("CLAUDE_SYNC_PROFILE", ""), tier=env.get("CLAUDE_SYNC_TIER", ""))
     i = 0
     while i < len(argv):
         arg = argv[i]
         if arg in ("--repair", "--reinstall"):
             args.repair = True
-        elif arg in ("--profile", "--project-path"):
+        elif arg in ("--profile", "--project-path", "--tier"):
             if i + 1 >= len(argv):
-                what = "a profile name" if arg == "--profile" else "a path"
+                what = {"--profile": "a profile name", "--project-path": "a path"}.get(
+                    arg, "a tier (basic or full)"
+                )
                 raise Fail(f"{arg} needs {what}.", hint=USAGE)
             i += 1
             if arg == "--profile":
                 args.profile = argv[i]
+            elif arg == "--tier":
+                args.tier = argv[i]
             else:
                 args.project_path = argv[i]
         elif arg.startswith("--profile="):
             args.profile = arg.removeprefix("--profile=")
         elif arg.startswith("--project-path="):
             args.project_path = arg.removeprefix("--project-path=")
+        elif arg.startswith("--tier="):
+            args.tier = arg.removeprefix("--tier=")
         else:
             raise Fail(f"Unknown option: {arg}", hint=USAGE)
         i += 1
@@ -137,6 +154,10 @@ def _parse(argv: list[str], env: Mapping[str, str]) -> _Args:
         raise Fail(
             f"Not a valid profile name: {args.profile}",
             hint="Use only letters, digits, '.', '_' and '-' (not '.' or '..').",
+        )
+    if args.tier:
+        machineconf.check_tier(
+            args.tier, hint="Use --tier basic or --tier full (or CLAUDE_SYNC_TIER), then re-run."
         )
     return args
 
@@ -248,9 +269,18 @@ def _repair(url: str, repo: Path, host: str, home: Path, claude: Path, agents: P
     skilllinks.remove_skill_links(claude, agents)
 
 
-def _run_tools() -> None:
-    """Every step, every run; a failing one never stops the install."""
-    for name in _TOOL_STEPS:
+def _tool_steps(tier: str) -> tuple[str, ...]:
+    """The tool steps this run makes. The one place that decides it: a flag
+    that skips the python or npm tools belongs here too. gh is always in,
+    since every sync needs it for its PR. Nothing is ever uninstalled."""
+    if tier == machineconf.TIER_BASIC:
+        return ("install_gh_tools",)
+    return _TOOL_STEPS
+
+
+def _run_tools(tier: str = machineconf.DEFAULT_TIER) -> None:
+    """Every step of the tier, every run; a failing one never stops the install."""
+    for name in _tool_steps(tier):
         try:
             getattr(tools, name)()
         except Exception as err:  # noqa: BLE001 - bash `step || true`
@@ -298,9 +328,13 @@ def _offer_to_create(path: str) -> None:
     print(f"Created {printable(path)}.")
 
 
-def _project_path(args: _Args, env: Mapping[str, str], home: Path) -> str:
+def _project_path(args: _Args, env: Mapping[str, str], home: Path, tier: str) -> str | None:
+    """The project path for a new conf. None on the basic tier when none was
+    given: basic syncs no memory, so it neither asks nor falls back."""
     default = str(home / "project")
     chosen = args.project_path or env.get("CLAUDE_SYNC_PROJECT_PATH") or ""
+    if not chosen and tier == machineconf.TIER_BASIC:
+        return None
     if not chosen:
         chosen = _ask(f"Primary Claude Code working directory on this machine [{default}]: ") or default
     _check_project(chosen)
@@ -340,12 +374,19 @@ def _main(argv: list[str], env: Mapping[str, str]) -> int:
     if not (repo / ".git").exists():
         _clone(url, repo)
 
-    _run_tools()
-    _gh_notes(env, host)
-
     check_real_dir(repo / "machines")
     conf = machineconf.machine_conf_path(repo, host)
     existed = conf.is_file()
+    # An existing conf keeps its tier, as it keeps its profile.
+    tier = (
+        machineconf.read_machine_tier(repo, host)
+        if existed
+        else args.tier or machineconf.DEFAULT_TIER
+    )
+
+    _run_tools(tier)
+    _gh_notes(env, host)
+
     if args.profile and existed:
         print(
             f"machines/{host}.conf already exists, so --profile is ignored."
@@ -354,9 +395,20 @@ def _main(argv: list[str], env: Mapping[str, str]) -> int:
         )
     elif args.profile and args.profile != host and not profile.profile_dir(repo, args.profile).is_dir():
         raise Fail(f"No profile called '{args.profile}': machines/{args.profile}/ does not exist in the repo.")
+    if args.tier and existed:
+        print(
+            f"machines/{host}.conf already exists, so --tier is ignored (this machine uses"
+            f" '{tier}'). Use: claude-sync.sh tier {args.tier}",
+            file=sys.stderr,
+        )
 
     if not existed:
-        machineconf.write_machine_conf(repo, host, _project_path(args, env, home))
+        project = _project_path(args, env, home, tier)
+        if project is None:
+            machineconf.write_machine_tier(repo, host, tier)
+        else:
+            machineconf.write_machine_conf(repo, host, project)
+            machineconf.write_machine_tier(repo, host, tier)
         if args.profile and args.profile != host:
             machineconf.write_machine_profile(repo, host, args.profile)
 

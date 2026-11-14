@@ -297,7 +297,8 @@ def sync_capture(
     repo: Path,
     profile_excludes: Mapping[str, Iterable[str]] | None = None,
     *,
-    memory_dir: Path,
+    memory_dir: Path | None,
+    memory_delete: bool = True,
 ) -> None:
     """Copy live config into the repo (bash sync_capture).
 
@@ -308,16 +309,20 @@ def sync_capture(
     neither copied nor deleted on the repo side; rules, commands and memory
     never take excludes. A missing live folder or file is skipped, so it
     never empties the repo copy.
+
+    memory_dir=None leaves the repo's memory/ alone entirely (the basic
+    tier): not checked, created, copied into or deleted from.
+    memory_delete=False copies memory in without deleting (adopting memory
+    after a switch from basic to full).
     """
-    claude_home, agents_home, repo, memory_dir = map(
-        Path, (claude_home, agents_home, repo, memory_dir)
-    )
+    claude_home, agents_home, repo = map(Path, (claude_home, agents_home, repo))
+    repo_dirs = tuple(d for d in _REPO_DIRS if memory_dir is not None or d != "memory")
     # The repo side is never followed: a linked folder would have capture
     # write (and delete) outside the clone. Checked before mkdir, which
     # accepts a link to a folder without a word.
-    for d in _REPO_TOPS + _REPO_DIRS:
+    for d in _REPO_TOPS + repo_dirs:
         check_real_dir(repo / d)
-    for d in _REPO_DIRS:
+    for d in repo_dirs:
         (repo / d).mkdir(parents=True, exist_ok=True)
     for live, in_repo in _FILES:
         if (claude_home / live).is_file():
@@ -333,11 +338,11 @@ def sync_capture(
                 exclude=_kind_excludes(profile_excludes, kind),
                 exclude_anywhere=keep,
             )
-    if memory_dir.is_dir():
+    if memory_dir is not None and Path(memory_dir).is_dir():
         _mirror(
-            memory_dir,
+            Path(memory_dir),
             repo / "memory",
-            delete=True,
+            delete=memory_delete,
             exclude=frozenset(),
             exclude_anywhere=keep,
         )
@@ -350,7 +355,8 @@ def sync_apply(
     *,
     mirror: bool,
     profile_excludes: Mapping[str, Iterable[str]] | None = None,
-    memory_dir: Path,
+    memory_dir: Path | None,
+    memory_mirror: bool | None = None,
 ) -> None:
     """Copy repo config out to the live paths (bash sync_apply).
 
@@ -360,17 +366,22 @@ def sync_apply(
     mirror=False merges without deleting (a machine's first-ever sync). Nothing is excluded,
     `.gitkeep` included, as in bash.
 
+    memory_dir=None leaves the local memory folder alone entirely (the
+    basic tier): not created, copied into or deleted from. memory_mirror
+    overrides `mirror` for memory only (None: same as `mirror`), so memory
+    can be merged in while the rest is mirrored.
+
     `profile_excludes` (same shape as for sync_capture) defaults to none, and
     the CLI passes none, matching bash: profile_unapply removes owned entries
     so that this call restores the shared copy. Passing owned names here
     would stop that restore.
     """
-    repo, claude_home, agents_home, memory_dir = map(
-        Path, (repo, claude_home, agents_home, memory_dir)
-    )
+    repo, claude_home, agents_home = map(Path, (repo, claude_home, agents_home))
     for _kind, live, _repo_dir in _pairs(claude_home, agents_home, repo):
         live.mkdir(parents=True, exist_ok=True)
-    memory_dir.mkdir(parents=True, exist_ok=True)
+    if memory_dir is not None:
+        memory_dir = Path(memory_dir)
+        memory_dir.mkdir(parents=True, exist_ok=True)
     for live, in_repo in _FILES:
         if (repo / in_repo).is_file():
             _copy_file(repo / in_repo, claude_home / live)
@@ -384,11 +395,32 @@ def sync_apply(
                 exclude=_kind_excludes(profile_excludes, kind),
                 exclude_anywhere=frozenset(),
             )
-    if (repo / "memory").is_dir():
+    if memory_dir is not None and (repo / "memory").is_dir():
         _mirror(
             repo / "memory",
             memory_dir,
-            delete=mirror,
+            delete=mirror if memory_mirror is None else memory_mirror,
             exclude=frozenset(),
             exclude_anywhere=frozenset(),
         )
+
+
+def differing_files(src: Path, dst: Path) -> list[str]:
+    """Paths (relative, `/`-separated, sorted) of regular files under src
+    whose counterpart under dst is also a regular file but holds other
+    bytes: what a non-deleting copy of src over dst would overwrite. Links
+    are not followed on either side."""
+    src, dst = Path(src), Path(dst)
+    found: list[str] = []
+    if not src.is_dir() or not dst.is_dir():
+        return found
+    for root, dirs, files in os.walk(src):
+        rel_root = Path(root).relative_to(src)
+        dirs[:] = [d for d in dirs if not (Path(root) / d).is_symlink()]
+        for name in files:
+            a, b = Path(root) / name, dst / rel_root / name
+            if a.is_symlink() or b.is_symlink() or not b.is_file() or _is_tmp(name):
+                continue
+            if a.stat().st_size != b.stat().st_size or not _same_bytes(a, b):
+                found.append((rel_root / name).as_posix())
+    return sorted(found)

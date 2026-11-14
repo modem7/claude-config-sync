@@ -19,7 +19,7 @@ Different hostname, same behaviour as an existing machine (shared profile, edits
 ~/claude-config/install.sh --profile host-a
 ```
 
-`--project-path /absolute/path` sets the primary project path without the prompt. On Windows it is stored as `Z:\path`; a Git Bash `/z/path` is converted. If the folder does not exist, the installer asks whether to create it (terminal only); otherwise it falls back to the home folder.
+`--tier basic|full` (or `CLAUDE_SYNC_TIER`) picks the sync tier; see "Choose or switch a sync tier" below. `--project-path /absolute/path` sets the primary project path without the prompt. On Windows it is stored as `Z:\path`; a Git Bash `/z/path` is converted. If the folder does not exist, the installer asks whether to create it (terminal only); otherwise it falls back to the home folder.
 
 On Windows, clone with `-c core.autocrlf=false` and run the `.cmd` shim (it uses `py -3`, else `python`):
 
@@ -106,13 +106,23 @@ A real content conflict is reported, not guessed at: this machine's pending chan
 
 A merged PR whose branch GitHub kept is ignored: the machine remembers the tip it last pushed, and a fresh clone checks with `gh` for a merged or closed PR at that tip. The next change replaces that branch and opens a new PR.
 
+## Choose or switch a sync tier
+
+A machine's tier is `TIER=` in `machines/<hostname>.conf` (no line means `full`). `basic` syncs `CLAUDE.md`, `settings.json`, agents, hooks and skills, with profiles and overrides as usual; `full` adds the primary project's memory folder, and the installer adds the Python packages and `ccusage`. `gh` is installed on both.
+
+- New machine: `install.sh --tier basic` (or `CLAUDE_SYNC_TIER=basic`). No project path is asked for; one given with `--project-path` is still stored. An existing `.conf` wins: the flag is ignored with a hint.
+- Show it: `claude-sync.sh tier` (works on any branch).
+- Full to basic: `claude-sync.sh tier basic`. It captures first under `full`, so pending memory edits still go out, then the PR changes only the `.conf`. From then on `memory/` in the repo and the local memory folder are left exactly as they are, in both directions. Installed pip packages and `ccusage` stay installed; nothing is uninstalled. A local record, `~/.claude/.claude-sync-applied-tier`, notes that memory was left alone; do not delete it while on `basic`.
+- Basic to full: `claude-sync.sh tier full`, or `claude-sync.sh tier full /absolute/project/path` when the `.conf` has no project path (the command refuses, changing nothing, without one; it never changes an existing path). The same happens if the `TIER=` change arrives from another machine or by hand. The first full-tier runs adopt memory as `bootstrap` does: the repo's memory is merged into the local folder without deleting (the repo's copy wins a same-named file; the local version is copied to `~/.claude/.claude-sync-memory-backup/<time>-*/` first, and the run says so), and the next capture adds local-only memory files without deleting shared ones (it merges the repo's memory in first only if no apply has done so yet, so memory edits made after the switch are kept). So the `tier full` PR carries only the `.conf`; the local memory files appear in the next sync's PR. After that capture the local record is removed and memory mirrors (with delete) again, as on every full machine. Check that PR's `memory/` diff.
+- `doctor` prints the tier. On `basic` it warns (exit 0) when `settings.json` enables an agent-memory plugin, since its Python packages are not installed; on `full` it reports a too-long memory folder name as before.
+
 ## Reset a machine's sync state
 
 ```bash
 ~/claude-config/install.sh --repair
 ```
 
-The machine's new `.conf` goes out through its sync PR; repair pushes nothing to the default branch. This keeps the machine's profile and settings override. Re-give the profile with `--profile <name>` if it followed another one. It refuses while this machine's sync PR is pending (the clone shows those changes as uncommitted), so merge or drop the PR and run `sync` first. Never `git stash` or `git reset --hard` the clone to get past it. A fresh clone picks up the machine's open `sync/<hostname>` from origin by itself.
+The machine's new `.conf` goes out through its sync PR; repair pushes nothing to the default branch. This keeps the machine's profile and settings override. Re-give the profile with `--profile <name>` if it followed another one. Re-give the tier with `--tier basic` if it was basic (the new `.conf` is full otherwise; that is safe, the next syncs adopt memory without deleting, see "Choose or switch a sync tier"). It refuses while this machine's sync PR is pending (the clone shows those changes as uncommitted), so merge or drop the PR and run `sync` first. Never `git stash` or `git reset --hard` the clone to get past it. A fresh clone picks up the machine's open `sync/<hostname>` from origin by itself.
 
 On Windows, run `install.cmd --repair` from a prompt whose folder is outside the clone (for example `cd /d %USERPROFILE%` first): Windows cannot delete a folder a shell is using.
 

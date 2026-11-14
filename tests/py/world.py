@@ -216,7 +216,7 @@ class World:
         """bats sync_as: like cli, then once a repo-changing command
         succeeded, merge its PR and let the machine sync once more."""
         rc, out = self.cli(m, *argv, stdin=stdin)
-        if rc == 0 and argv and argv[0] in ("push", "sync", "bootstrap", "override", "profile"):
+        if rc == 0 and argv and argv[0] in ("push", "sync", "bootstrap", "override", "profile", "tier"):
             merge_and_converge(self.origin, m.host, lambda c: self.cli(m, c))
         return rc, out
 

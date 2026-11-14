@@ -1,5 +1,7 @@
 # Claude Code config sync — design
 
+> **Note (2026-11-14):** memory is now synced on the `full` sync tier only (the default). A machine with `TIER=basic` in its `.conf` syncs no memory and installs no pip or npm tools. See `docs/runbook.md`, "Choose or switch a sync tier", and `docs/risks.md` rows 37 to 39.
+
 > **Superseded (2026-11, Python port phase 1):** `claude-sync.sh` and
 > `install.sh` are now shims that run the Python package `claude_sync/`
 > (`python3 -m claude_sync`, `python3 -m claude_sync.install`), with

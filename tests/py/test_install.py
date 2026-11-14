@@ -596,3 +596,70 @@ def test_module_entry_point_runs_without_a_traceback(fake_home):
     assert result.returncode == 1
     assert "Unknown option: --bogus" in result.stderr
     assert "Traceback" not in result.stderr + result.stdout
+
+
+# ── --tier ───────────────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("how", ["flag", "equals", "env"])
+def test_tier_basic_asks_no_project_path_and_installs_only_gh(world, tmp_path, tool_calls, how):
+    repo, claude, agents = fresh(tmp_path, "basic")
+    argv = {"flag": ("--tier", "basic"), "equals": ("--tier=basic",), "env": ()}[how]
+    extra = {"CLAUDE_SYNC_TIER": "basic"} if how == "env" else {}
+    rc, out = run_install(world, "host-basic", repo, claude, agents, *argv, project=None, stdin="", **extra)
+    assert rc == 0, out
+    assert "Primary Claude Code working directory" not in out
+    assert conf_text(repo, "host-basic") == "TIER=basic\n"
+    assert tool_calls == ["install_gh_tools"]
+    assert not (claude / "projects").exists()
+    assert "machines/host-basic.conf" in git("-C", world.origin, "ls-tree", "-r", "--name-only", "sync/host-basic").stdout
+
+
+def test_tier_basic_still_stores_a_project_path_it_was_given(world, tmp_path, tool_calls):
+    repo, claude, agents = fresh(tmp_path, "basicp")
+    rc, out = run_install(world, "host-basicp", repo, claude, agents, "--tier", "basic", project="/home/user/p")
+    assert rc == 0, out
+    assert conf_text(repo, "host-basicp") == "PRIMARY_PROJECT_PATH=/home/user/p\nTIER=basic\n"
+    assert not (claude / "projects").exists()
+
+
+def test_tier_full_is_the_default_and_writes_no_tier_line(world, tmp_path, tool_calls):
+    repo, claude, agents = fresh(tmp_path, "full")
+    rc, out = run_install(world, "host-full", repo, claude, agents, "--tier", "full")
+    assert rc == 0, out
+    assert conf_text(repo, "host-full") == "PRIMARY_PROJECT_PATH=/home/user/project\n"
+    assert tool_calls == ["install_npm_tools", "install_gh_tools", "install_python_tools"]
+
+
+@pytest.mark.parametrize("bad", ["Basic", "", "minimal"])
+def test_a_bad_tier_is_refused_before_anything_changes(world, tmp_path, bad):
+    repo, claude, agents = fresh(tmp_path, "bad")
+    rc, out = run_install(world, "host-bad", repo, claude, agents, f"--tier={bad}" if bad else "--tier")
+    assert rc == 1
+    assert ("Not a valid sync tier" in out) or ("--tier needs" in out)
+    assert not repo.exists()
+
+
+def test_tier_flag_is_ignored_when_the_conf_exists(world, tmp_path, tool_calls):
+    repo, claude, agents = fresh(tmp_path, "again")
+    assert run_install(world, "host-again", repo, claude, agents)[0] == 0
+    tool_calls.clear()
+    rc, out = run_install(world, "host-again", repo, claude, agents, "--tier", "basic")
+    assert rc == 0, out
+    assert "--tier is ignored (this machine uses 'full'). Use: claude-sync.sh tier basic" in out
+    assert "TIER=" not in conf_text(repo, "host-again")
+    assert tool_calls == ["install_npm_tools", "install_gh_tools", "install_python_tools"]
+
+
+def test_an_existing_basic_conf_keeps_skipping_the_python_and_npm_tools(world, tmp_path, tool_calls):
+    repo, claude, agents = fresh(tmp_path, "keep")
+    assert run_install(world, "host-keep", repo, claude, agents, "--tier", "basic", project=None)[0] == 0
+    tool_calls.clear()
+    rc, out = run_install(world, "host-keep", repo, claude, agents, project=None)
+    assert rc == 0, out
+    assert tool_calls == ["install_gh_tools"]
+
+
+def test_tool_steps_is_the_one_place_that_picks_them():
+    assert install._tool_steps("basic") == ("install_gh_tools",)
+    assert install._tool_steps("full") == install._TOOL_STEPS

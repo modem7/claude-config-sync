@@ -23,7 +23,8 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 
 USAGE = """\
 Usage: claude-sync.sh [push|pull|sync|bootstrap|doctor [remediate]|override add|remove|list [JQ_PATH]
-                       |profile list|show NAME|copy FROM [--force] [--yes]|use NAME]
+                       |profile list|show NAME|copy FROM [--force] [--yes]|use NAME
+                       |tier [show|basic|full [PROJECT_PATH]]]
   sync       capture local changes onto sync/<hostname>, merge the default branch in, apply, push, open/update its PR
   push       capture onto sync/<hostname>, push it and open/update its PR (no apply)
   pull       bring in the default branch (keeping this machine's unmerged changes) and apply
@@ -33,6 +34,9 @@ Usage: claude-sync.sh [push|pull|sync|bootstrap|doctor [remediate]|override add|
   Needs git 2.40+. A second run waits CLAUDE_SYNC_LOCK_WAIT seconds (default 10) for the first.
   e.g. claude-sync.sh override add '.enabledPlugins["name@marketplace"]'
        claude-sync.sh profile use other-host   # follow machines/other-host/ (agents, hooks, skills, CLAUDE.md)
+       claude-sync.sh tier basic               # stop syncing memory here (TIER= in machines/<hostname>.conf)
+  tier: basic syncs CLAUDE.md, settings.json, agents, hooks and skills; full (the default) adds memory.
+  'tier full' needs the primary project path once (PROJECT_PATH) if the conf has none.
 """
 
 

@@ -468,27 +468,35 @@ def profile_capture(
     repo: Path,
     claude_home: Path,
     agents_home: Path,
-    memory_dir: Path,
+    memory_dir: Path | None,
     profile: str,
     update_stamp: bool = False,
+    *,
+    memory_delete: bool = True,
 ) -> None:
     """sync_capture without the owned names, CLAUDE.md without the append
     block, and local edits to owned entries written back into the profile.
     update_stamp=True (the real capture, not a dry run into a scratch tree)
-    also records written-back entries as applied. Raises Fail for a bad
-    name, a profile that holds a link, or a failed copy; the first two
-    before anything in the repo changes."""
+    also records written-back entries as applied. memory_dir=None and
+    memory_delete are passed on to sync_capture (the basic tier, and memory
+    adoption). Raises Fail for a bad name, a profile that holds a link, or
+    a failed copy; the first two before anything in the repo changes."""
     _refuse_linked_profile(repo, profile, "Nothing was captured.")
     _guard(
         "capture the live config",
         "the live files are untouched; check `git status` in the repo before committing.",
-        _capture, repo, claude_home, agents_home, memory_dir, profile, update_stamp,
+        _capture, repo, claude_home, agents_home, memory_dir, profile, update_stamp, memory_delete,
     )
 
 
-def _capture(repo, claude_home, agents_home, memory_dir, profile, update_stamp) -> None:
+def _capture(
+    repo, claude_home, agents_home, memory_dir, profile, update_stamp, memory_delete=True
+) -> None:
     excludes = profile_excludes(repo, claude_home, profile)
-    sync_capture(claude_home, agents_home, repo, excludes, memory_dir=memory_dir)
+    sync_capture(
+        claude_home, agents_home, repo, excludes,
+        memory_dir=memory_dir, memory_delete=memory_delete,
+    )
     claude_md = Path(claude_home) / "CLAUDE.md"
     if claude_md.is_file():
         data = claude_md.read_bytes()

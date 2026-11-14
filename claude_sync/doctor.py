@@ -11,14 +11,15 @@ Issues go to stdout as "ISSUE: ..." lines; do_doctor returns 1 when it
 printed any (even if remediate fixed them), else 0.
 
 Also here (they cannot live in overlay.py or profile.py, which gitflow
-imports): the repo-changing `override` and `profile` subcommands, ports
-of do_override, do_profile and do_profile_copy, and finish_sync, the tail
+imports): the repo-changing `override`, `profile` and `tier` subcommands,
+ports of do_override, do_profile and do_profile_copy, and finish_sync, the tail
 they share with `sync`. Each takes the run's ExitStack, which holds the
 lock begin_sync takes until the run ends.
 """
 
 from __future__ import annotations
 
+import json
 import os
 import shlex
 import shutil
@@ -84,7 +85,16 @@ def do_doctor(
     _check_upstream(ctx, stack, report, remediate, run_sync)
 
     project = machineconf.read_primary_project_path(ctx.repo, ctx.hostname)
-    if project is not None:
+    has_conf = machineconf.machine_conf_path(ctx.repo, ctx.hostname).is_file()
+    tier = gitflow.current_tier(ctx) if has_conf else machineconf.DEFAULT_TIER
+    if has_conf:
+        print(_tier_line(ctx, tier))
+    if tier == machineconf.TIER_BASIC:
+        # A basic machine needs no project path: its memory is not synced.
+        _warn_memory_plugins(ctx)
+        _check_settings(ctx, report, remediate)
+        doctor_profile(ctx, report, remediate)
+    elif project is not None:
         warning = long_name_warning(project)
         if warning:
             report(warning[0].upper() + warning[1:])
@@ -107,6 +117,47 @@ def do_doctor(
         sb = gitflow.sync_branch(ctx.hostname)
         print(f"Note: {sb} holds this machine's changes that are not merged yet; its PR shares them once merged.")
     return report.issues
+
+
+def _tier_line(ctx: SyncCtx, tier: str) -> str:
+    if tier == machineconf.TIER_BASIC:
+        return (
+            f"Sync tier: basic (TIER= in machines/{ctx.hostname}.conf): memory, the python"
+            " packages and the npm tools are not synced or installed here."
+        )
+    line = "Sync tier: full (memory synced)."
+    if gitflow.memory_mode(ctx) == gitflow.MEMORY_ADOPT:
+        line += (
+            " Memory is being adopted after a switch from basic: nothing is deleted from"
+            " memory until the next capture has taken in the local memory files."
+        )
+    return line
+
+
+# A plugin whose name holds this needs the full tier's pip packages.
+_MEMORY_PLUGIN = "agent-memory"
+
+
+def _warn_memory_plugins(ctx: SyncCtx) -> None:
+    """A warning, not an ISSUE (doctor still exits 0): on the basic tier the
+    pip packages an agent-memory plugin needs are not installed. Reads the
+    live settings.json (shared plus overrides), else the shared one."""
+    live = ctx.claude_home / "settings.json"
+    path = live if live.is_file() else ctx.repo / "dot-claude" / "settings.json"
+    try:
+        data = json.loads(path.read_bytes())
+    except (OSError, ValueError):
+        return
+    plugins = data.get("enabledPlugins") if isinstance(data, dict) else None
+    if not isinstance(plugins, dict):
+        return
+    for name in sorted(k for k, v in plugins.items() if v is True and _MEMORY_PLUGIN in k):
+        print(
+            f"WARNING: settings.json enables {_printable(name)}, which needs the python packages"
+            " that only the full tier installs (mcp<2, aiosqlite, pyyaml). Install them by hand,"
+            " turn the plugin off on this machine with a settings override, or run"
+            " 'claude-sync.sh tier full'."
+        )
 
 
 def _check_upstream(ctx: SyncCtx, stack: ExitStack, report: _Report, remediate: bool, run_sync) -> None:
@@ -359,6 +410,85 @@ def profile_use(ctx: SyncCtx, stack: ExitStack, name: str) -> None:
     gitflow.commit_worktree(ctx, f"profile: {own} uses profile {name}")
     finish_sync(ctx)
     print(f"{own} now follows profile '{name}'; edits to its entries go to machines/{name}/.")
+
+
+# ── tier [show|basic|full [PROJECT_PATH]] ────────────────────────────────
+
+
+def _require_conf(ctx: SyncCtx) -> None:
+    conf = machineconf.machine_conf_path(ctx.repo, ctx.hostname)
+    if not conf.is_file():
+        raise Fail(f"No machine config at {conf}. Run install.sh first.")
+
+
+def tier_show(ctx: SyncCtx) -> None:
+    _require_conf(ctx)
+    print(_tier_line(ctx, gitflow.current_tier(ctx)))
+    print("  basic: CLAUDE.md, settings.json, agents, hooks and skills (with profiles and overrides).")
+    print("  full:  basic plus the primary project's memory folder, the python packages and npm tools.")
+
+
+def _tier_project(ctx: SyncCtx, project: str | None) -> str | None:
+    """The project path `tier full PROJECT_PATH` may add. None when none is
+    given. Refused when it has a line break, or when the conf already names
+    a different one: changing the memory folder of a full machine would
+    mirror another folder over memory/."""
+    if project is None:
+        return None
+    if not project or any(c in project for c in "\r\n\0"):
+        raise Fail(
+            "The project path is empty or has a line break or NUL character in it.",
+            hint="  Give the path on one line: claude-sync.sh tier full /absolute/path",
+        )
+    project = machineconf.project_path_for_os(project)
+    current = machineconf.read_primary_project_path(ctx.repo, ctx.hostname)
+    if current is not None and current != project:
+        raise Fail(
+            f"machines/{ctx.hostname}.conf already names the project path {_printable(current)}.",
+            hint="  Run 'claude-sync.sh tier full' without a path to keep it. This command does not"
+            " change a project path.",
+        )
+    return None if current is not None else project
+
+
+def tier_use(ctx: SyncCtx, stack: ExitStack, tier: str, project: str | None = None) -> None:
+    """Makes this machine sync at `tier`. Nothing is deleted on either side:
+    basic stops touching memory, and the first full-tier sync after basic
+    adopts memory without deleting (gitflow.memory_mode)."""
+    machineconf.check_tier(tier)
+    _require_conf(ctx)
+    host = ctx.hostname
+    new_project = _tier_project(ctx, project)
+    has_project = machineconf.read_primary_project_path(ctx.repo, host) is not None
+    if tier == machineconf.TIER_FULL and not has_project and new_project is None:
+        raise Fail(
+            f"The full tier syncs the primary project's memory, and machines/{host}.conf"
+            " names no project path.",
+            hint="  Give it once: claude-sync.sh tier full /absolute/path/of/your/project\n"
+            "  (the folder you usually run claude from). Nothing was changed.",
+        )
+    if tier == gitflow.current_tier(ctx) and new_project is None:
+        print(f"{host} already uses sync tier '{tier}'. Nothing was changed.")
+        return
+    gitflow.begin_sync(ctx, stack)
+    # Capture under the old tier first, so pending edits (memory too, when
+    # leaving full) go out before anything changes.
+    gitflow.do_capture_and_commit(ctx)
+    if new_project is not None:
+        machineconf.write_primary_project_path(ctx.repo, host, new_project)
+    machineconf.write_machine_tier(ctx.repo, host, tier)
+    gitflow.commit_worktree(ctx, f"tier: {host} uses sync tier {tier}")
+    finish_sync(ctx)
+    if tier == machineconf.TIER_BASIC:
+        print(
+            f"{host} now uses sync tier 'basic': memory is no longer synced here, and nothing was"
+            " deleted. Installed python packages and npm tools stay installed."
+        )
+    else:
+        print(
+            f"{host} now uses sync tier 'full': memory is merged in without deleting anything;"
+            " the next sync adds this machine's own memory files to its PR."
+        )
 
 
 def _ask(prompt: str) -> str:

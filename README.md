@@ -190,7 +190,7 @@ for /f "delims=" %i in ('git -C "%USERPROFILE%\claude-config" remote get-url ori
 
 </details>
 
-The installer asks one question: the **primary folder you run `claude` from** on this machine (default `~/project`). It uses that to find Claude Code's memory folder. Skip the prompt with `--project-path /absolute/path`.
+The installer asks one question: the **primary folder you run `claude` from** on this machine (default `~/project`). It uses that to find Claude Code's memory folder. Skip the prompt with `--project-path /absolute/path`, or with `--tier basic`, which does not sync memory.
 
 Then it runs a one-time **bootstrap**: it adopts what is already in your repo, then contributes anything unique to this machine. Nothing local gets deleted and nothing shared gets overwritten.
 
@@ -283,6 +283,7 @@ Everything goes through one entry point. On Linux and macOS it is `claude-sync.s
 | `doctor remediate` | Check, and fix what is safe to fix. |
 | `override list` / `add PATH` / `remove PATH` | Manage settings that stay on this machine only. |
 | `profile list` / `show NAME` / `use NAME` / `copy NAME` | Manage per-machine profiles. |
+| `tier` / `tier basic` / `tier full [PROJECT_PATH]` | Show or change what this machine syncs (see [Sync tiers](#sync-tiers)). |
 
 ```bash
 ~/claude-config/claude-sync.sh sync                       # Linux / macOS
@@ -300,6 +301,7 @@ Everything goes through one entry point. On Linux and macOS it is `claude-sync.s
 |---|---|
 | `--project-path PATH` | Set the primary project folder without the prompt. Use an absolute path. |
 | `--profile NAME` | Follow an existing machine profile (for a rebuilt machine with a new hostname). |
+| `--tier basic\|full` | What a new machine syncs (default `full`). `basic` skips memory, the Python packages and `ccusage`, and asks for no project path. Ignored when the machine's `.conf` already exists: use `claude-sync.sh tier` then. |
 | `--repair` (alias `--reinstall`) | Reset this machine's own sync bookkeeping and set it up again. Your real Claude config is not touched. |
 
 ### Running the Python directly
@@ -325,6 +327,7 @@ You rarely need these.
 | `CLAUDE_SYNC_REPO_URL` | Your repo's URL. Needed by `install` (it prompts if unset and you are at a terminal). |
 | `CLAUDE_SYNC_PROFILE` | Follow a machine profile (same as `--profile`). |
 | `CLAUDE_SYNC_PROJECT_PATH` | Primary project folder (same as `--project-path`). |
+| `CLAUDE_SYNC_TIER` | `basic` or `full` for a new machine (same as `--tier`). |
 | `CLAUDE_SYNC_GH_REPO` | `owner/repo`, if it cannot be worked out from the `origin` URL. |
 | `CLAUDE_SYNC_GH` | Path to a `gh` that is not on your `PATH`. |
 | `CLAUDE_SYNC_LOCK_WAIT` | Seconds a second run waits for the first (default 10, must be 0 or more). |
@@ -342,7 +345,7 @@ You rarely need these.
 | `dot-claude/commands/` | `~/.claude/commands/` |
 | `dot-claude/keybindings.json` | `~/.claude/keybindings.json` |
 | `dot-agents/skills/` | `~/.agents/skills/` |
-| `memory/` | this machine's primary-project memory folder |
+| `memory/` | this machine's primary-project memory folder (full tier only) |
 
 On Windows `~` means `%USERPROFILE%`.
 
@@ -353,6 +356,19 @@ They are synced but are not part of this template: the public mirror never ships
 
 > [!WARNING]
 > Hook scripts run automatically (they are wired up through `settings.json`). A merged change to `dot-claude/hooks/` takes effect on every machine at its next sync. Review hook changes in the PR like any other code.
+
+### Sync tiers
+
+Each machine has a tier, set by `TIER=` in `machines/<hostname>.conf`:
+
+| Tier | Syncs | Installer adds |
+|---|---|---|
+| `full` (the default) | everything above, memory included | `gh`, the Python packages, `ccusage` |
+| `basic` | `CLAUDE.md`, `settings.json`, agents, hooks and skills, with profiles and overrides | `gh` only |
+
+Pick one with `install.sh --tier basic` on a new machine, or change it later with `claude-sync.sh tier basic` or `claude-sync.sh tier full` (it goes out in this machine's PR). A basic machine needs no project path; `tier full` needs one once (it refuses, changing nothing, until you give `tier full /absolute/path`) if the `.conf` has none (`claude-sync.sh tier full /absolute/path`).
+
+Switching never deletes anything. Going to `basic` leaves `memory/` in the repo and the local memory folder exactly as they are, and keeps installed tools. Going back to `full` merges memory in without deleting: the repo's copy wins a same-named file (the local one is kept under `~/.claude/.claude-sync-memory-backup/`), and the next sync adds this machine's own memory files to its PR. On `basic`, `doctor` warns if `settings.json` enables an agent-memory plugin, since its Python packages are not installed.
 
 ## How a change travels
 
@@ -444,7 +460,7 @@ Every failure prints what failed and what to do, on stderr, and exits non-zero.
 
 `--repair` deletes the local `~/claude-config` clone, rewrites this machine's `machines/<hostname>.conf`, removes the skill symlinks this tool made, then runs the first-time flow again. It does **not** touch `~/.claude/CLAUDE.md`, `settings.json`, agents, hooks, skills or memory.
 
-It refuses to run while the clone has changes that are not on the default branch, which is usually this machine's pending sync PR. Merge or drop that PR, run `sync`, then repair. It needs a repo URL (a terminal prompt, or `CLAUDE_SYNC_REPO_URL`), and re-give `--profile <name>` if the machine followed another profile.
+It refuses to run while the clone has changes that are not on the default branch, which is usually this machine's pending sync PR. Merge or drop that PR, run `sync`, then repair. It needs a repo URL (a terminal prompt, or `CLAUDE_SYNC_REPO_URL`), and re-give `--profile <name>` if the machine followed another profile, and `--tier basic` if it was a basic machine (a repair writes a full conf otherwise).
 
 To drop a machine's pending changes instead of merging them: close the PR, delete its `sync/<hostname>` branch on GitHub, then run
 
@@ -474,9 +490,9 @@ Synced files under `dot-claude/`, `dot-agents/` and `memory/` keep their exact b
 
 Each `install.sh` run also provisions a few tools that git cannot carry:
 
-- **`ccusage`** (npm, Claude Code usage and cost analysis): `npm install -g ccusage@latest`. Edit `NPM_TOOLS` in `claude_sync/tools.py` for your own. Skipped with a message if `npm` is missing.
-- **The GitHub CLI**, via your system package manager, if it is missing. On Windows it only tells you what to install.
-- **Python packages for the agent-memory plugin** (`mcp<2`, `aiosqlite`, `pyyaml`), installed with pip into the Python that runs the installer. On Linux it adds `--break-system-packages` and installs `python-is-python3` via apt if there is no `python` command. On Windows pip runs without that flag and retries once with `--user` if refused; the `python-is-python3` step only prints advice.
+- **`ccusage`** (npm, Claude Code usage and cost analysis): (full tier only) `npm install -g ccusage@latest`. Edit `NPM_TOOLS` in `claude_sync/tools.py` for your own. Skipped with a message if `npm` is missing.
+- **The GitHub CLI**, via your system package manager, if it is missing. On Windows it only tells you what to install. This is the only step on the basic tier.
+- **Python packages for the agent-memory plugin** (full tier only) (`mcp<2`, `aiosqlite`, `pyyaml`), installed with pip into the Python that runs the installer. On Linux it adds `--break-system-packages` and installs `python-is-python3` via apt if there is no `python` command. On Windows pip runs without that flag and retries once with `--user` if refused; the `python-is-python3` step only prints advice.
 
 Neither download is hash-checked. Both are skipped with a message, not an error, if the tool they need is missing.
 
