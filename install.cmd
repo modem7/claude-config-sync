@@ -7,7 +7,7 @@ rem does not hold the clone open while --repair deletes it (run --repair
 rem from outside the clone: Windows cannot delete a shell's folder). Each run is the last thing the script does
 rem (cmd.exe re-reads this file after every command).
 rem
-rem install.cmd [--repair|--reinstall] [--profile NAME] [--project-path PATH]
+rem install.cmd [--repair|--reinstall] [--profile NAME] [--project-path PATH] [--tier basic|full] [--skip-python-deps]
 setlocal
 set "PYTHONPATH=%~dp0."
 set "PYTHONSAFEPATH=1"

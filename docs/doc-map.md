@@ -33,6 +33,7 @@ Which doc to update for each kind of change. Read it before opening a PR, then r
 | Change sync flow, branches, env vars or failure messages | `USAGE` in `claude_sync/cli.py`, the installer messages in `claude_sync/install.py`, both READMEs, `CLAUDE.md` "How it works" and Rules, `docs/runbook.md`, `docs/risks.md`, the tests, and a superseded note on the affected spec. |
 | Change what is synced (`claude_sync/syncfiles.py`) | The synced-paths table in both READMEs, `docs/risks.md`, `docs/runbook.md`. |
 | Change profiles or overrides | The profile sections of both READMEs, `docs/runbook.md`, "How it works" in `CLAUDE.md`. |
+| Add or change `get.sh` or `get.ps1` | Their usage text and header comments, the Option A section and flag table of both READMEs, `docs/runbook.md` ("One-command setup"), `docs/risks.md` (rows 41 to 43), `docs/windows-manual-test.md` (W14) and `tests/py/test_get_scripts.py`. They are published, so keep them generic. |
 | Change what is published | `PATHS` in `claude_sync/publish.py` and the trigger paths in `.github/workflows/publish-public.yml` (in lockstep), the "never published" notes in both READMEs, the publish section of `docs/runbook.md`, `CLAUDE.md` rules, `docs/risks.md`. |
 | Change a Windows-only code path (lock, links and junctions, read-only handling, `.cmd` shims, drive-letter paths) | `docs/windows-manual-test.md`, the Windows checklist in `docs/python-port.md`, `docs/risks.md`. |
 | Differ from the bash on purpose | `docs/python-port.md`, and the docs above for the kind of change. |

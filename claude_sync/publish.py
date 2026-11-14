@@ -35,6 +35,7 @@ from claude_sync.util import Fail, redact, run
 # .github/workflows/publish-public.yml.
 PATHS = (
     "install.sh", "claude-sync.sh", "npm-tools.sh", "gh-tools.sh", "python-tools.sh",
+    "get.sh", "get.ps1",
     "install.cmd", "claude-sync.cmd", "claude_sync", "pytest.ini",
     "CONTRIBUTING.md", "CLAUDE.md", "AGENTS.md", "LICENSE", ".gitattributes", ".gitignore",
     ".editorconfig", ".wakatime-project", "renovate.json", ".github", "docs", "tests",

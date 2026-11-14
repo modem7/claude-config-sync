@@ -135,6 +135,76 @@ gh auth login
 
 ## Quick start
 
+### Option A: one command
+
+Run one command and it installs what is missing (git, Python 3.12+, `gh`), logs you in to GitHub, clones **your** private repo and runs the installer. First make your private repo from the template (`gh repo create YOUR_REPO --private --template modem7/claude-config-sync`, or **Use this template** in the browser; see Option B, step 1). Then replace `YOUR_USER/YOUR_REPO` below with its name.
+
+**Linux / macOS**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/modem7/claude-config-sync/main/get.sh | bash -s -- YOUR_USER/YOUR_REPO
+```
+
+**Windows PowerShell**
+
+`irm ... | iex` cannot take parameters, so pass the repo in an environment variable:
+
+```powershell
+$env:CLAUDE_SYNC_REPO = 'YOUR_USER/YOUR_REPO'; irm https://raw.githubusercontent.com/modem7/claude-config-sync/main/get.ps1 | iex
+```
+
+To pass flags (here `-Yes`), run it as a script block instead:
+
+```powershell
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/modem7/claude-config-sync/main/get.ps1))) -Repo YOUR_USER/YOUR_REPO -Yes
+```
+
+**Windows Command Prompt (cmd.exe)**
+
+```bat
+set "CLAUDE_SYNC_REPO=YOUR_USER/YOUR_REPO"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/modem7/claude-config-sync/main/get.ps1 | iex"
+```
+
+> [!WARNING]
+> `get.ps1` has been run only under PowerShell 7 on Linux with stand-in programs. It has **not** been tried on Windows, on Windows PowerShell 5.1, with real `winget`, or from a real `cmd.exe`. Try `-DryRun` first, and use Option B if anything looks wrong.
+
+Piping a script from the internet into a shell runs it before you have read it. If you would rather read it first, download it, look at it, then run it:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/modem7/claude-config-sync/main/get.sh -o get.sh
+less get.sh
+bash get.sh YOUR_USER/YOUR_REPO
+```
+
+```powershell
+irm https://raw.githubusercontent.com/modem7/claude-config-sync/main/get.ps1 -OutFile get.ps1
+notepad get.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File .\get.ps1 -Repo YOUR_USER/YOUR_REPO
+```
+
+The scripts print a `[n/6]` line per step, ask before installing anything, and refuse to go on if Python is older than 3.12, if a Python virtualenv is active (Windows), if the clone folder exists but is not a git clone, or if it has no `origin` remote. An existing clone is used as it is. A repo name is only accepted as `OWNER/REPO`, not a URL.
+
+| Linux / macOS | PowerShell | What it does |
+|---|---|---|
+| `OWNER/REPO` (first argument) | `-Repo OWNER/REPO` | Your private sync repo. Else `CLAUDE_SYNC_REPO`, else a prompt. |
+| `--dir PATH` | `-Dir PATH` | Where to clone it. Else `CLAUDE_SYNC_DIR`, else `~/claude-config`. |
+| `--project-path PATH` | `-ProjectPath PATH` | Passed to the installer: your main Claude Code project folder. |
+| `--profile NAME` | `-Profile NAME` | Passed to the installer: follow `machines/NAME/`. |
+| `--tier basic\|full` | `-Tier basic\|full` | Passed to the installer: what a new machine syncs (default `full`). `basic` skips memory, the pip packages and `ccusage`; only `gh` is set up. |
+| `--skip-python-deps` | `-SkipPythonDeps` | Passed to the installer: skip the agent-memory plugin's pip packages. Only matters on the `full` tier, since `basic` already skips them. |
+| `--yes` | `-Yes` | Accept every default answer in the script. |
+| `--dry-run` | `-DryRun` | Print the commands that change things instead of running them. |
+
+`--yes` does **not** answer the installer's own project-path question. For a hands-off run, also pass `--project-path` (`-ProjectPath`). The `CLAUDE_SYNC_REPO` and `CLAUDE_SYNC_DIR` environment variables are the only way to give settings through `irm | iex`.
+
+### Option B: step by step
+
+Use this if you would rather run each step yourself, or Option A does not work on your machine.
+
+<details>
+<summary><b>Show the manual steps</b></summary>
+
 ### 1. Make your own private repo
 
 This tool syncs *your* personal config, so it needs *your* repo. Do not point it at this one.
@@ -204,6 +274,8 @@ Run the same install steps on the next machine (same repo URL). It adopts your m
 
 > [!NOTE]
 > Run the installer with your **system** Python, not from a virtualenv or `uv run`. Its pip step installs into whichever Python runs it.
+
+</details>
 
 ## Make it work
 
@@ -302,6 +374,7 @@ Everything goes through one entry point. On Linux and macOS it is `claude-sync.s
 | `--project-path PATH` | Set the primary project folder without the prompt. Use an absolute path. |
 | `--profile NAME` | Follow an existing machine profile (for a rebuilt machine with a new hostname). |
 | `--tier basic\|full` | What a new machine syncs (default `full`). `basic` skips memory, the Python packages and `ccusage`, and asks for no project path. Ignored when the machine's `.conf` already exists: use `claude-sync.sh tier` then. |
+| `--skip-python-deps` | Skip the agent-memory plugin's pip packages and the `python` alias step. The npm and `gh` steps still run. Only matters on the `full` tier: `--tier basic` already skips pip and npm and runs only `gh`. |
 | `--repair` (alias `--reinstall`) | Reset this machine's own sync bookkeeping and set it up again. Your real Claude config is not touched. |
 
 ### Running the Python directly
@@ -328,6 +401,7 @@ You rarely need these.
 | `CLAUDE_SYNC_PROFILE` | Follow a machine profile (same as `--profile`). |
 | `CLAUDE_SYNC_PROJECT_PATH` | Primary project folder (same as `--project-path`). |
 | `CLAUDE_SYNC_TIER` | `basic` or `full` for a new machine (same as `--tier`). |
+| `CLAUDE_SYNC_REPO`, `CLAUDE_SYNC_DIR` | Read by `get.sh` / `get.ps1` only (not the installer): the repo as `OWNER/REPO` and the clone folder. |
 | `CLAUDE_SYNC_GH_REPO` | `owner/repo`, if it cannot be worked out from the `origin` URL. |
 | `CLAUDE_SYNC_GH` | Path to a `gh` that is not on your `PATH`. |
 | `CLAUDE_SYNC_LOCK_WAIT` | Seconds a second run waits for the first (default 10, must be 0 or more). |
@@ -493,6 +567,7 @@ Each `install.sh` run also provisions a few tools that git cannot carry:
 - **`ccusage`** (npm, Claude Code usage and cost analysis): (full tier only) `npm install -g ccusage@latest`. Edit `NPM_TOOLS` in `claude_sync/tools.py` for your own. Skipped with a message if `npm` is missing.
 - **The GitHub CLI**, via your system package manager, if it is missing. On Windows it only tells you what to install. This is the only step on the basic tier.
 - **Python packages for the agent-memory plugin** (full tier only) (`mcp<2`, `aiosqlite`, `pyyaml`), installed with pip into the Python that runs the installer. On Linux it adds `--break-system-packages` and installs `python-is-python3` via apt if there is no `python` command. On Windows pip runs without that flag and retries once with `--user` if refused; the `python-is-python3` step only prints advice.
+  Pass `--skip-python-deps` to leave this whole step out (the `python` alias and the pip packages); the npm and `gh` steps still run. On the `basic` tier (`--tier basic`) only `gh` is set up, so this flag changes nothing there.
 
 Neither download is hash-checked. Both are skipped with a message, not an error, if the tool they need is missing.
 
@@ -526,6 +601,6 @@ Design rationale: `docs/superpowers/specs/2026-07-25-claude-config-sync-design.m
 
 ## Getting updates to this tool
 
-This repo is a published mirror of the tool code (`install.sh`, `claude-sync.sh`, `claude_sync/`, hooks, `tests/`) from its maintainer's private sync repo, with personal and private directories left out. It is not pushed to directly. To update, `git pull` this repo's default branch into your own clone, then re-run `install.sh` or `claude-sync.sh sync`.
+This repo is a published mirror of the tool code (`install.sh`, `claude-sync.sh`, `get.sh`, `get.ps1`, `claude_sync/`, hooks, `tests/`) from its maintainer's private sync repo, with personal and private directories left out. It is not pushed to directly. To update, `git pull` this repo's default branch into your own clone, then re-run `install.sh` or `claude-sync.sh sync`.
 
 The mirror never includes the maintainer's `memory/`, `private/`, `weekly-review/` or `machines/` folders.

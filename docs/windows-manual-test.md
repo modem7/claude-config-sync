@@ -23,6 +23,7 @@ Skipped on Windows (so not tested there): everything that needs a real symlink, 
 | Read-only file overwritten, read-only tree deleted, through a real sync | Library level only | W7 |
 | Drive-letter project paths, Git Bash form, `Z:` fallback to the home folder | Pure string tests; the real drive check is not run | W8 |
 | Memory folder name for a path with spaces | String test only | W9 |
+| `get.ps1` one-command setup (PowerShell 5.1 and 7, real `winget`, PATH refresh, Git Bash discovery, `cmd.exe` one-liner) | Static checks only (`test_get_scripts.py`); never run on Windows | W14 |
 | CRLF and LF files stay byte for byte under `core.autocrlf=true` | Not run | W10 |
 | Exec bit kept for a new hook committed from Windows | Skipped | W11 |
 | Profile hooks ending in `.sh` skipped, `profile copy` lists every hook | Partly (`test_doctor.py`, `test_profile.py` skip some) | W12 |
@@ -347,9 +348,19 @@ Close the window afterwards: it holds throwaway values for `USERPROFILE` and `HO
 | W11 exec bit | | |
 | W12 profile hooks | | |
 | W13 hostname and encoding | | |
+| W14 `get.ps1` | | |
 
 ## Not covered here
 
 - `install.cmd --repair`: it deletes and re-clones the repo folder, runs the tool installs and works on the real home. Run it on a spare user account, from a prompt outside the clone, after reading `docs/runbook.md`.
 - The `python` fallback of the `.cmd` shims when `py` is missing: only testable on a machine without the launcher.
 - Windows Terminal and PowerShell 5.1 differ in how they pass embedded double quotes to a native program. W1 uses spaces and `&`, which both pass the same way.
+
+## W14. `get.ps1` one-command setup
+
+Not isolated like the steps above: it installs real software with `winget` and logs in to `gh`. Use a spare machine or VM, and a throwaway private repo.
+
+1. In Windows PowerShell 5.1, first run `& ([scriptblock]::Create((irm https://raw.githubusercontent.com/modem7/claude-config-sync/main/get.ps1))) -Repo OWNER/REPO -DryRun` (`irm | iex` cannot take `-DryRun`). Expect `[1/6]` to `[6/6]` lines and commands printed, none run.
+2. Repeat without `-DryRun`. Expect winget to install what is missing, a new `PATH` to be picked up without a new terminal, and the installer to run.
+3. Repeat from Command Prompt: `powershell -NoProfile -ExecutionPolicy Bypass -Command "irm ... | iex"`.
+4. Repeat in PowerShell 7. Record what failed, and where, in a PR.

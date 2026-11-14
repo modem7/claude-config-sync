@@ -3,7 +3,7 @@
 # every argument passed through. It runs from the clone, so the package
 # imports from here.
 #
-# install.sh [--repair|--reinstall] [--profile NAME] [--project-path PATH]
+# install.sh [--repair|--reinstall] [--profile NAME] [--project-path PATH] [--tier basic|full] [--skip-python-deps]
 set -euo pipefail
 
 dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

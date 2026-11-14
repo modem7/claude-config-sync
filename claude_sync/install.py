@@ -1,5 +1,5 @@
 """The installer: `python -m claude_sync.install [--repair|--reinstall]
-[--profile NAME] [--project-path PATH] [--tier basic|full]`.
+[--profile NAME] [--project-path PATH] [--tier basic|full] [--skip-python-deps]`.
 
 Port of install.sh. It clones the sync repo (CLAUDE_SYNC_REPO_URL, else a
 prompt on a terminal) into CLAUDE_SYNC_REPO_DIR (default ~/claude-config),
@@ -33,6 +33,10 @@ out through this machine's sync PR) and the skill links this tool made.
 Live config (~/.claude, ~/.agents/skills, memory), profiles and settings
 overrides are kept. It refuses while the clone holds a pending sync PR's
 changes or commits that are not on origin.
+
+--skip-python-deps leaves out the python tool step (the `python` alias and
+the agent-memory plugin's pip packages), for a machine with no pip. The
+npm and gh steps still run. It works with --repair too.
 
 Line endings: the clone is made with `git clone -c core.autocrlf=false`,
 which stays in the clone's config, so git never adds CRLF to synced files
@@ -71,7 +75,7 @@ IS_WINDOWS = os.name == "nt"
 
 USAGE = (
     "Usage: install.sh [--repair|--reinstall] [--profile NAME] [--project-path PATH]"
-    " [--tier basic|full]"
+    " [--tier basic|full] [--skip-python-deps]"
 )
 _TOOL_STEPS = ("install_npm_tools", "install_gh_tools", "install_python_tools")
 
@@ -82,6 +86,7 @@ class _Args:
     profile: str = ""
     project_path: str | None = None
     tier: str = ""
+    skip_python_deps: bool = False
 
 
 def resolve_project_path(preferred: str | None, home: Path) -> str:
@@ -128,6 +133,8 @@ def _parse(argv: list[str], env: Mapping[str, str]) -> _Args:
         arg = argv[i]
         if arg in ("--repair", "--reinstall"):
             args.repair = True
+        elif arg == "--skip-python-deps":
+            args.skip_python_deps = True
         elif arg in ("--profile", "--project-path", "--tier"):
             if i + 1 >= len(argv):
                 what = {"--profile": "a profile name", "--project-path": "a path"}.get(
@@ -269,18 +276,21 @@ def _repair(url: str, repo: Path, host: str, home: Path, claude: Path, agents: P
     skilllinks.remove_skill_links(claude, agents)
 
 
-def _tool_steps(tier: str) -> tuple[str, ...]:
+def _tool_steps(tier: str, skip_python_deps: bool = False) -> tuple[str, ...]:
     """The tool steps this run makes. The one place that decides it: a flag
     that skips the python or npm tools belongs here too. gh is always in,
     since every sync needs it for its PR. Nothing is ever uninstalled."""
     if tier == machineconf.TIER_BASIC:
         return ("install_gh_tools",)
+    if skip_python_deps:
+        print("python tools step skipped (--skip-python-deps): no python alias or agent-memory pip packages.")
+        return tuple(name for name in _TOOL_STEPS if name != "install_python_tools")
     return _TOOL_STEPS
 
 
-def _run_tools(tier: str = machineconf.DEFAULT_TIER) -> None:
+def _run_tools(tier: str = machineconf.DEFAULT_TIER, skip_python_deps: bool = False) -> None:
     """Every step of the tier, every run; a failing one never stops the install."""
-    for name in _tool_steps(tier):
+    for name in _tool_steps(tier, skip_python_deps):
         try:
             getattr(tools, name)()
         except Exception as err:  # noqa: BLE001 - bash `step || true`
@@ -384,7 +394,7 @@ def _main(argv: list[str], env: Mapping[str, str]) -> int:
         else args.tier or machineconf.DEFAULT_TIER
     )
 
-    _run_tools(tier)
+    _run_tools(tier, args.skip_python_deps)
     _gh_notes(env, host)
 
     if args.profile and existed:

@@ -405,6 +405,39 @@ def test_repair_on_a_machine_with_no_prior_state_is_a_fresh_install(world, tmp_p
     assert (repo / "machines" / "host-never-run.conf").is_file()
 
 
+# ── --skip-python-deps ───────────────────────────────────────────────────
+
+
+def test_skip_python_deps_leaves_out_only_the_python_step(world, tmp_path, tool_calls):
+    repo, claude, agents = fresh(tmp_path, "nopip")
+    rc, out = run_install(world, "host-nopip", repo, claude, agents, "--skip-python-deps")
+    assert rc == 0, out
+    assert tool_calls == ["install_npm_tools", "install_gh_tools"]
+    assert "python tools step skipped (--skip-python-deps)" in out
+    assert (repo / "machines" / "host-nopip.conf").is_file()
+
+
+def test_skip_python_deps_works_with_repair(world, tmp_path, tool_calls):
+    repo, claude, agents = fresh(tmp_path, "nopip2")
+    rc, out = run_install(world, "host-nopip2", repo, claude, agents, "--repair", "--skip-python-deps")
+    assert rc == 0, out
+    assert "Repairing: resetting local sync state for host-nopip2..." in out
+    assert tool_calls == ["install_npm_tools", "install_gh_tools"]
+    assert "python tools step skipped" in out
+
+
+def test_python_step_runs_without_the_flag(world, tmp_path, tool_calls):
+    repo, claude, agents = fresh(tmp_path, "withpip")
+    rc, out = run_install(world, "host-withpip", repo, claude, agents)
+    assert rc == 0, out
+    assert "install_python_tools" in tool_calls
+    assert "skipped" not in out
+
+
+def test_usage_names_skip_python_deps():
+    assert install.USAGE.endswith("[--tier basic|full] [--skip-python-deps]")
+
+
 # ── --profile (profile.bats) ─────────────────────────────────────────────
 
 
@@ -663,3 +696,11 @@ def test_an_existing_basic_conf_keeps_skipping_the_python_and_npm_tools(world, t
 def test_tool_steps_is_the_one_place_that_picks_them():
     assert install._tool_steps("basic") == ("install_gh_tools",)
     assert install._tool_steps("full") == install._TOOL_STEPS
+
+
+def test_skip_python_deps_changes_nothing_on_the_basic_tier(world, tmp_path, tool_calls):
+    repo, claude, agents = fresh(tmp_path, "basicskip")
+    rc, out = run_install(world, "host-basicskip", repo, claude, agents, "--tier", "basic", "--skip-python-deps")
+    assert rc == 0, out
+    assert tool_calls == ["install_gh_tools"]
+    assert "python tools step skipped" not in out

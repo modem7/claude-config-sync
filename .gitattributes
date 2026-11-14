@@ -815,6 +815,11 @@ packages/**       -text -diff
 .yarn/**          binary
 .pnp.*            binary
 
+## Bootstrap scripts are fetched raw (irm | iex, curl | bash): LF in the repo and in checkouts.
+## Placed before the synced-config block; later rules win.
+get.ps1           text eol=lf
+get.sh            text eol=lf
+
 ## Synced config: keep exact bytes (last, so these win over the rules above)
 dot-claude/**     -text
 dot-agents/**     -text

@@ -2,6 +2,20 @@
 
 Procedures for the sync tool. Paths assume the clone is at `~/claude-config`.
 
+## One-command setup
+
+`get.sh` (Linux, macOS) and `get.ps1` (Windows) do the prerequisites, `gh` login, clone and install in one go. Fetch them from the public mirror, because they run before `gh` exists:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/modem7/claude-config-sync/main/get.sh | bash -s -- OWNER/REPO
+```
+
+```powershell
+$env:CLAUDE_SYNC_REPO = 'OWNER/REPO'; irm https://raw.githubusercontent.com/modem7/claude-config-sync/main/get.ps1 | iex
+```
+
+Flags: `--yes`, `--dry-run`, `--dir`, `--project-path`, `--profile`, `--tier basic|full`, `--skip-python-deps` (PowerShell: `-Repo -Dir -ProjectPath -Profile -Tier -Yes -DryRun -SkipPythonDeps`). `--tier basic` runs only the `gh` step, and the script then skips its own pip check. `--skip-python-deps` only changes the `full` tier: it drops the python step while npm and `gh` still run. Environment: `CLAUDE_SYNC_REPO`, `CLAUDE_SYNC_DIR`. `--yes` does not cover the installer's own project-path question, so pass `--project-path` for a hands-off run. The script never overwrites an existing clone: it uses it as it is, and stops if the folder is not a git clone. A failure says what to do; fix it and re-run, the steps are safe to repeat. `--skip-python-deps` leaves out only the agent-memory plugin's pip packages and the `python` alias; use it when pip is unavailable. `get.ps1` has not been run on real Windows yet (`docs/risks.md`, row 42). The rest of this page is the manual route.
+
 ## Restore a machine on new infrastructure
 
 First install the prerequisites: Python 3.12 or newer (the system one, not a venv), git 2.40 or newer, and the GitHub CLI (`gh`), logged in with `gh auth login`. `install.sh` prints a hint if `gh` is missing or not logged in; without it every sync pushes its branch, then fails.
