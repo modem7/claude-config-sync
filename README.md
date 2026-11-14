@@ -80,6 +80,8 @@ If `gh` is not in your distro's repositories, use the [official install steps](h
 gh auth login
 ```
 
+Pick **HTTPS** or **SSH** when asked. With HTTPS, answer **Yes** to "Authenticate Git with your GitHub credentials" so `git` can clone and push with no SSH key. With SSH, `gh` can create and upload a key for you.
+
 Optional, for `ccusage`: `sudo apt install -y nodejs npm` (or your distro's equivalent).
 
 </details>
@@ -87,9 +89,9 @@ Optional, for `ccusage`: `sudo apt install -y nodejs npm` (or your distro's equi
 <details open>
 <summary><b>Windows</b></summary>
 
-In PowerShell, using the built-in `winget`:
+In PowerShell or Command Prompt, using the built-in `winget`:
 
-```powershell
+```bat
 winget install --id Git.Git -e                    # git + Git Bash
 winget install --id Python.Python.3.12 -e         # Python + the py launcher
 winget install --id GitHub.cli -e                 # gh
@@ -98,9 +100,11 @@ winget install --id OpenJS.NodeJS.LTS -e          # optional, for ccusage
 
 **Close and reopen your terminal**, then log in to GitHub:
 
-```powershell
+```bat
 gh auth login
 ```
+
+When asked, pick **HTTPS** (the easiest on Windows) and answer **Yes** to "Authenticate Git with your GitHub credentials". That lets `git` clone and push with no SSH key. If you would rather use SSH, you also need the OpenSSH client (Settings, System, Optional features, "OpenSSH Client") and an SSH key added to GitHub. The error `cannot spawn ...\ssh.exe` means the client is missing.
 
 Then check that **Git Bash** can run Python, because the session hooks run there. Open Git Bash and run:
 
@@ -139,28 +143,41 @@ On GitHub, **fork** [this repo](https://github.com/modem7/claude-config-sync), t
 
 ### 2. Install on your first machine
 
+Log in to `gh` first (see [Prerequisites](#prerequisites)). `gh repo clone` uses whichever of HTTPS or SSH you chose there. The tool reads your repo's URL from the clone's `origin`, so the commands below pass it on for you.
+
 <details open>
 <summary><b>Linux / macOS</b></summary>
 
 ```bash
-git clone git@github.com:YOUR_USER/YOUR_REPO.git ~/claude-config
-CLAUDE_SYNC_REPO_URL=git@github.com:YOUR_USER/YOUR_REPO.git ~/claude-config/install.sh
+gh repo clone YOUR_USER/YOUR_REPO ~/claude-config
+CLAUDE_SYNC_REPO_URL=$(git -C ~/claude-config remote get-url origin) ~/claude-config/install.sh
 ```
 
 </details>
 
 <details open>
-<summary><b>Windows (PowerShell or Command Prompt)</b></summary>
+<summary><b>Windows</b></summary>
 
-Clone with `core.autocrlf=false` so line endings stay exactly as they are:
+> [!TIP]
+> Not sure which Windows terminal you are in? A **PowerShell** prompt starts with `PS C:\...>`. A **Command Prompt** (cmd.exe) prompt is just `C:\...>`. The two use different syntax, so copy the matching block.
+
+Everything after `--` goes to git. `core.autocrlf=false` keeps line endings exactly as they are.
+
+**PowerShell**
 
 ```powershell
-git clone -c core.autocrlf=false git@github.com:YOUR_USER/YOUR_REPO.git $HOME\claude-config
-$env:CLAUDE_SYNC_REPO_URL = "git@github.com:YOUR_USER/YOUR_REPO.git"
+gh repo clone YOUR_USER/YOUR_REPO "$HOME\claude-config" -- -c core.autocrlf=false
+$env:CLAUDE_SYNC_REPO_URL = git -C "$HOME\claude-config" remote get-url origin
 & "$HOME\claude-config\install.cmd"
 ```
 
-In Command Prompt use `set CLAUDE_SYNC_REPO_URL=...` and `%USERPROFILE%\claude-config\install.cmd` instead.
+**Command Prompt (cmd.exe)**
+
+```bat
+gh repo clone YOUR_USER/YOUR_REPO "%USERPROFILE%\claude-config" -- -c core.autocrlf=false
+for /f "delims=" %i in ('git -C "%USERPROFILE%\claude-config" remote get-url origin') do set CLAUDE_SYNC_REPO_URL=%i
+"%USERPROFILE%\claude-config\install.cmd"
+```
 
 </details>
 
@@ -203,7 +220,9 @@ tail ~/.claude/claude-config-sync.log
 </details>
 
 <details>
-<summary><b>Windows (PowerShell)</b></summary>
+<summary><b>Windows</b></summary>
+
+**PowerShell**
 
 ```powershell
 # 1. Prerequisites are present?
@@ -217,6 +236,22 @@ py -3 --version; git --version; gh auth status
 
 # 4. Did the session hooks log anything?
 Get-Content "$HOME\.claude\claude-config-sync.log" -Tail 20
+```
+
+**Command Prompt (cmd.exe)**
+
+```bat
+:: 1. Prerequisites are present?
+py -3 --version & git --version & gh auth status
+
+:: 2. Is the sync healthy? (read-only report)
+"%USERPROFILE%\claude-config\claude-sync.cmd" doctor
+
+:: 3. Run a sync by hand and watch what it does
+"%USERPROFILE%\claude-config\claude-sync.cmd" sync
+
+:: 4. Did the session hooks log anything?
+powershell -Command "Get-Content $env:USERPROFILE\.claude\claude-config-sync.log -Tail 20"
 ```
 
 </details>
@@ -244,7 +279,10 @@ Everything goes through one entry point. On Linux and macOS it is `claude-sync.s
 ~/claude-config/claude-sync.sh sync                       # Linux / macOS
 ```
 ```powershell
-& "$HOME\claude-config\claude-sync.cmd" sync              # Windows
+& "$HOME\claude-config\claude-sync.cmd" sync              # Windows PowerShell
+```
+```bat
+"%USERPROFILE%\claude-config\claude-sync.cmd" sync      :: Windows Command Prompt
 ```
 
 ### Installer options
