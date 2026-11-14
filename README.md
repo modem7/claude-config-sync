@@ -139,7 +139,16 @@ gh auth login
 
 This tool syncs *your* personal config, so it needs *your* repo. Do not point it at this one.
 
-On GitHub, **fork** [this repo](https://github.com/modem7/claude-config-sync), then make your copy **private** in its Settings (or create a new private repo and push this code to it).
+This repo is a **template**, so your copy starts with a clean history and stays private.
+
+- **In the browser:** click **Use this template**, then **Create a new repository**, and choose **Private**.
+- **From the command line** (needs `gh`, see [Prerequisites](#prerequisites)):
+
+  ```bash
+  gh repo create YOUR_REPO --private --template modem7/claude-config-sync
+  ```
+
+Do not **fork** it: GitHub keeps a fork of a public repo public, and this tool syncs your personal config.
 
 ### 2. Install on your first machine
 
