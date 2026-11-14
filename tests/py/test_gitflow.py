@@ -653,6 +653,39 @@ def test_push_also_refuses_to_revert_when_live_is_stale(world):
     assert not has_ref(a.repo, "refs/heads/sync/host-a")
 
 
+def test_rules_commands_and_keybindings_reach_another_machine(world):
+    """Shared rules, commands and keybindings.json travel like agents. The
+    empty rules/commands folders capture creates must not make an unedited
+    moved clone look edited (risks row 37)."""
+    a = world.machine("a")
+    b = world.machine("b")
+    (b.claude / "rules").mkdir(exist_ok=True)
+    (b.claude / "rules" / "style.md").write_bytes(b"# style\n")
+    (b.claude / "commands").mkdir(exist_ok=True)
+    (b.claude / "commands" / "deploy.md").write_bytes(b"deploy\n")
+    (b.claude / "keybindings.json").write_bytes(b'{"bindings":[]}\n')
+    world.sync_as(b, "sync")
+    git("-C", a.repo, "pull", "-q", "--ff-only")
+    assert not (a.claude / "rules" / "style.md").exists()
+
+    out = world.ok(a, "sync")
+    assert "skipping capture" in out and "refusing" not in out
+    assert (a.claude / "rules" / "style.md").read_bytes() == b"# style\n"
+    assert (a.claude / "commands" / "deploy.md").read_bytes() == b"deploy\n"
+    assert (a.claude / "keybindings.json").read_bytes() == b'{"bindings":[]}\n'
+
+
+def test_a_local_only_rule_on_a_moved_clone_is_refused_not_deleted(world):
+    a, _ = _fast_forward_clone_without_apply(world)
+    (a.claude / "rules").mkdir(exist_ok=True)
+    (a.claude / "rules" / "mine.md").write_bytes(b"mine\n")
+    rc, out = world.run(a, "sync")
+    assert rc == 1
+    assert "refusing to capture" in out
+    assert (a.claude / "rules" / "mine.md").read_bytes() == b"mine\n"
+    assert not (a.repo / "dot-claude" / "rules" / "mine.md").exists()
+
+
 def test_clone_moved_and_live_edited_is_refused_and_changes_nothing(world):
     a, _ = _fast_forward_clone_without_apply(world)
     (a.claude / "CLAUDE.md").write_text("local edit\n")

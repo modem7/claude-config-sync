@@ -71,6 +71,10 @@ SOURCE_FILES = {
     "private/notes.md": b"private\n",
     "weekly-review/run.py": b"print(1)\n",
     "dot-claude/projects/x.json": b"{}\n",
+    # Synced to every machine, but may be personal: kept out of the template.
+    "dot-claude/rules/personal.md": b"personal rule\n",
+    "dot-claude/commands/personal.md": b"personal command\n",
+    "dot-claude/keybindings.json": b'{"personal":true}\n',
     }
 
 
@@ -190,6 +194,19 @@ def test_export_never_contains_personal_paths(world):
         assert "/machines/" not in f"/{path}", path
     blobs = run(["git", "-C", str(public), "grep", "-I", "-e", "someone", "main"])
     assert blobs.returncode == 1, blobs.stdout  # no match
+
+
+def test_synced_rules_commands_and_keybindings_are_not_published(world):
+    """They sync between machines but are not part of the public template."""
+    source, public, _temp, env = world
+    assert publish.publish(source, env) == 0
+    tree = _pushed(public)
+    for path in tree:
+        assert not path.startswith(("dot-claude/rules/", "dot-claude/commands/")), path
+    assert "dot-claude/keybindings.json" not in tree
+    assert "dot-claude/settings.json" in tree  # the export did run
+    for rel in ("dot-claude/rules", "dot-claude/commands", "dot-claude/keybindings.json"):
+        assert rel not in publish.PATHS
 
 
 @pytest.mark.parametrize(

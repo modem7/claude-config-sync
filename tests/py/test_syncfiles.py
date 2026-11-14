@@ -40,7 +40,7 @@ def env(tmp_path):
         agents = tmp_path / "agents_home"
         memory = tmp_path / "claude_home" / "projects" / "-tmp-project" / "memory"
 
-    for d in ("dot-claude/agents", "dot-claude/hooks", "dot-agents/skills", "memory"):
+    for d in syncfiles._REPO_DIRS:
         (E.repo / d).mkdir(parents=True)
     (E.claude / "hooks").mkdir(parents=True)
     (E.agents / "skills" / "release").mkdir(parents=True)
@@ -117,7 +117,7 @@ def test_apply_to_fresh_machine(env, tmp_path):
         assert _is_exec(fresh_claude / "hooks/example-guard.sh")
 
 
-@pytest.mark.parametrize("missing", ["agents", "hooks"])
+@pytest.mark.parametrize("missing", ["agents", "hooks", "rules", "commands"])
 def test_capture_tolerates_missing_live_dir(env, missing):
     import shutil
 
@@ -129,9 +129,17 @@ def test_capture_tolerates_missing_live_dir(env, missing):
 def test_capture_tolerates_missing_everything(tmp_path):
     repo = tmp_path / "repo"
     sync_capture(tmp_path / "c", tmp_path / "a", repo, None, memory_dir=tmp_path / "m")
-    for d in ("dot-claude/agents", "dot-claude/hooks", "dot-agents/skills", "memory"):
+    for d in (
+        "dot-claude/agents",
+        "dot-claude/hooks",
+        "dot-claude/rules",
+        "dot-claude/commands",
+        "dot-agents/skills",
+        "memory",
+    ):
         assert (repo / d).is_dir()
     assert not (repo / "dot-claude/CLAUDE.md").exists()
+    assert not (repo / "dot-claude/keybindings.json").exists()
 
 
 def test_apply_mirror_true_deletes_local_only_hook(env):
@@ -546,7 +554,17 @@ def test_top_level_dst_symlink_is_followed(tmp_path):
 
 @pytest.mark.skipif(not POSIX, reason="needs POSIX symlinks")
 @pytest.mark.parametrize(
-    "linked", ["dot-claude", "dot-agents", "dot-claude/agents", "dot-claude/hooks", "dot-agents/skills", "memory"]
+    "linked",
+    [
+        "dot-claude",
+        "dot-agents",
+        "dot-claude/agents",
+        "dot-claude/hooks",
+        "dot-claude/rules",
+        "dot-claude/commands",
+        "dot-agents/skills",
+        "memory",
+    ],
 )
 def test_capture_refuses_a_linked_repo_folder(env, tmp_path, linked):
     outside = tmp_path / "outside"
@@ -560,3 +578,110 @@ def test_capture_refuses_a_linked_repo_folder(env, tmp_path, linked):
     assert (outside / "keep.md").read_bytes() == b"outside\n"
     assert not any(outside.rglob("SKILL.md")) and not any(outside.rglob("MEMORY.md"))
     assert not any(outside.rglob("CLAUDE.md"))
+
+
+# --- rules, commands and keybindings.json (shared only) -----------------------
+
+
+def _add_rules_commands_keys(e) -> None:
+    _write(e.claude / "rules/style.md", "# style rule\n")
+    _write(e.claude / "rules/sub/deep.md", "deep rule\n")
+    _write(e.claude / "commands/deploy.md", "deploy command\n")
+    _write(e.claude / "keybindings.json", '{"bindings":[]}\n')
+
+
+def test_capture_copies_rules_commands_and_keybindings(env):
+    _add_rules_commands_keys(env)
+    capture(env)
+    assert (env.repo / "dot-claude/rules/style.md").read_bytes() == b"# style rule\n"
+    assert (env.repo / "dot-claude/rules/sub/deep.md").read_bytes() == b"deep rule\n"
+    assert (env.repo / "dot-claude/commands/deploy.md").read_bytes() == b"deploy command\n"
+    assert (env.repo / "dot-claude/keybindings.json").read_bytes() == b'{"bindings":[]}\n'
+
+
+def test_apply_copies_rules_commands_and_keybindings_to_a_fresh_machine(env, tmp_path):
+    _add_rules_commands_keys(env)
+    capture(env)
+    fresh = tmp_path / "fresh_claude_home"
+    apply(env, claude=fresh, agents=tmp_path / "fresh_agents", memory=tmp_path / "fresh_mem")
+    assert (fresh / "rules/style.md").read_bytes() == b"# style rule\n"
+    assert (fresh / "rules/sub/deep.md").read_bytes() == b"deep rule\n"
+    assert (fresh / "commands/deploy.md").read_bytes() == b"deploy command\n"
+    assert (fresh / "keybindings.json").read_bytes() == b'{"bindings":[]}\n'
+
+
+@pytest.mark.parametrize("kind", ["rules", "commands"])
+def test_missing_live_rules_or_commands_never_empty_the_repo_copy(env, kind):
+    _write(env.repo / "dot-claude" / kind / "shared.md", "shared\n")
+    assert not (env.claude / kind).exists()
+    capture(env)
+    assert (env.repo / "dot-claude" / kind / "shared.md").read_bytes() == b"shared\n"
+
+
+def test_missing_live_keybindings_never_deletes_the_repo_copy(env):
+    _write(env.repo / "dot-claude/keybindings.json", '{"shared":true}\n')
+    capture(env)
+    assert (env.repo / "dot-claude/keybindings.json").read_bytes() == b'{"shared":true}\n'
+
+
+def test_missing_repo_keybindings_leaves_the_live_file_alone(env):
+    _write(env.claude / "keybindings.json", '{"local":true}\n')
+    for mirror_mode in (True, False):
+        apply(env, mirror_mode=mirror_mode)
+        assert (env.claude / "keybindings.json").read_bytes() == b'{"local":true}\n'
+
+
+@pytest.mark.parametrize("kind", ["rules", "commands"])
+def test_capture_deletes_a_rule_or_command_removed_live(env, kind):
+    _write(env.claude / kind / "keep.md", "keep\n")
+    _write(env.claude / kind / "gone.md", "gone\n")
+    capture(env)
+    (env.claude / kind / "gone.md").unlink()
+    capture(env)
+    assert (env.repo / "dot-claude" / kind / "keep.md").is_file()
+    assert not (env.repo / "dot-claude" / kind / "gone.md").exists()
+
+
+@pytest.mark.parametrize("kind", ["rules", "commands"])
+def test_apply_mirror_true_deletes_a_local_only_rule_or_command(env, kind):
+    _write(env.repo / "dot-claude" / kind / "shared.md", "shared\n")
+    _write(env.claude / kind / "local-only.md", "local\n")
+    apply(env, mirror_mode=True)
+    assert (env.claude / kind / "shared.md").read_bytes() == b"shared\n"
+    assert not (env.claude / kind / "local-only.md").exists()
+
+
+@pytest.mark.parametrize("kind", ["rules", "commands"])
+def test_apply_mirror_false_keeps_a_local_only_rule_or_command(env, kind):
+    _write(env.repo / "dot-claude" / kind / "shared.md", "shared\n")
+    _write(env.claude / kind / "local-only.md", "local\n")
+    apply(env, mirror_mode=False)
+    assert (env.claude / kind / "shared.md").is_file()
+    assert (env.claude / kind / "local-only.md").read_bytes() == b"local\n"
+
+
+def test_gitkeep_in_rules_is_not_captured(env):
+    _write(env.claude / "rules/.gitkeep", "")
+    _write(env.claude / "rules/a.md", "a\n")
+    capture(env)
+    assert (env.repo / "dot-claude/rules/a.md").is_file()
+    assert not (env.repo / "dot-claude/rules/.gitkeep").exists()
+
+
+def test_keybindings_round_trip_keeps_bytes_and_mtime(env, tmp_path):
+    data = b'{\r\n  "bindings": [{"key": "ctrl+k"}]\r\n}\r\n'  # CRLF kept as-is
+    live = env.claude / "keybindings.json"
+    _write(live, data)
+    os.utime(live, (1_600_000_000, 1_600_000_000))
+    capture(env)
+    in_repo = env.repo / "dot-claude/keybindings.json"
+    assert in_repo.read_bytes() == data
+    assert in_repo.stat().st_mtime == live.stat().st_mtime
+    fresh = tmp_path / "fresh_claude_home"
+    apply(env, claude=fresh, agents=tmp_path / "fa", memory=tmp_path / "fm")
+    assert (fresh / "keybindings.json").read_bytes() == data
+    assert (fresh / "keybindings.json").stat().st_mtime == live.stat().st_mtime
+    # A later edit in the repo replaces the live file whole, no merging.
+    _write(in_repo, b'{"bindings":[]}\n')
+    apply(env, claude=fresh, agents=tmp_path / "fa", memory=tmp_path / "fm")
+    assert (fresh / "keybindings.json").read_bytes() == b'{"bindings":[]}\n'

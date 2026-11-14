@@ -38,18 +38,31 @@ GITKEEP = ".gitkeep"
 TMP_SUFFIX = ".claude-sync-tmp"
 _CHUNK = 1 << 16
 
-# (kind, folder under the live home, folder in the repo). Kinds are the keys
-# of profile_excludes; memory is synced too but never takes excludes.
+# (kind, folder under the live home, folder in the repo). agents, hooks and
+# skills are the keys of profile_excludes. rules and commands are shared only
+# (no profile kind), so they never take excludes; nor does memory.
 _CLAUDE_DIRS = (
     ("agents", "agents", "dot-claude/agents"),
     ("hooks", "hooks", "dot-claude/hooks"),
+    ("rules", "rules", "dot-claude/rules"),
+    ("commands", "commands", "dot-claude/commands"),
 )
 _AGENTS_DIRS = (("skills", "skills", "dot-agents/skills"),)
 _FILES = (
     ("CLAUDE.md", "dot-claude/CLAUDE.md"),
     ("settings.json", "dot-claude/settings.json"),
+    ("keybindings.json", "dot-claude/keybindings.json"),
 )
-_REPO_DIRS = ("dot-claude/agents", "dot-claude/hooks", "dot-agents/skills", "memory")
+# Repo folders capture always creates. gitflow.live_matches_commit uses this
+# list too, so the two can never drift apart.
+_REPO_DIRS = (
+    "dot-claude/agents",
+    "dot-claude/hooks",
+    "dot-claude/rules",
+    "dot-claude/commands",
+    "dot-agents/skills",
+    "memory",
+)
 _REPO_TOPS = ("dot-claude", "dot-agents")
 
 
@@ -288,11 +301,13 @@ def sync_capture(
 ) -> None:
     """Copy live config into the repo (bash sync_capture).
 
-    CLAUDE.md and settings.json are copied when present (never deleted).
-    agents, hooks, skills and memory are mirrored with delete, `.gitkeep`
-    excluded at any depth. `profile_excludes` maps a kind ("agents", "hooks",
-    "skills") to top-level names that are neither copied nor deleted on the
-    repo side; memory never takes excludes. A missing live folder is skipped.
+    CLAUDE.md, settings.json and keybindings.json are copied when present
+    (never deleted). agents, hooks, rules, commands, skills and memory are
+    mirrored with delete, `.gitkeep` excluded at any depth. `profile_excludes`
+    maps a kind ("agents", "hooks", "skills") to top-level names that are
+    neither copied nor deleted on the repo side; rules, commands and memory
+    never take excludes. A missing live folder or file is skipped, so it
+    never empties the repo copy.
     """
     claude_home, agents_home, repo, memory_dir = map(
         Path, (claude_home, agents_home, repo, memory_dir)
@@ -339,9 +354,10 @@ def sync_apply(
 ) -> None:
     """Copy repo config out to the live paths (bash sync_apply).
 
-    mirror=True makes agents, hooks, skills and memory an exact copy of the
-    repo, deleting local-only entries (steady state). mirror=False merges
-    without deleting (a machine's first-ever sync). Nothing is excluded,
+    mirror=True makes agents, hooks, rules, commands, skills and memory an
+    exact copy of the repo, deleting local-only entries (steady state).
+    keybindings.json is copied like CLAUDE.md, never merged or deleted.
+    mirror=False merges without deleting (a machine's first-ever sync). Nothing is excluded,
     `.gitkeep` included, as in bash.
 
     `profile_excludes` (same shape as for sync_capture) defaults to none, and

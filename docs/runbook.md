@@ -75,6 +75,14 @@ git -C ~/claude-config reset -q --hard
 ~/claude-config/claude-sync.sh pull
 ```
 
+## First sync after rules, commands and keybindings joined the sync
+
+`~/.claude/rules/`, `~/.claude/commands/` and `~/.claude/keybindings.json` are synced, shared by every machine. A machine that has its own copies from before proposes them in its next sync PR. Check that PR: once merged, every machine mirrors the repo's `rules/` and `commands/`, so files only one machine had are removed on the others at their next apply.
+
+A machine without them is fine: capture skips what is missing and the repo copy is kept.
+
+If a sync says "refusing to capture" because the clone moved while this machine had its own rules or commands, copy `~/.claude/rules/`, `~/.claude/commands/` and `~/.claude/keybindings.json` somewhere safe first, as `pull` discards them. Run `pull`, copy the files back, then run `sync` to propose them.
+
 ## A sync seems stuck
 
 ```bash
@@ -126,7 +134,7 @@ It aborts if `machines/`, `memory/`, `private/` or `weekly-review/` ended up in 
 
 Published files keep the mode they have at HEAD, also when it is run on Windows (`_keep_modes` in `claude_sync/publish.py`).
 
-The whitelist (`PATHS` in `claude_sync/publish.py`) includes the `claude_sync/` package, `pytest.ini` and the `.cmd` shims, so the mirror can run and test the Python. Keep the trigger paths in `.github/workflows/publish-public.yml` in step with it; `test_workflow_triggers_match_whitelist` checks.
+The whitelist (`PATHS` in `claude_sync/publish.py`) includes the `claude_sync/` package, `pytest.ini` and the `.cmd` shims, so the mirror can run and test the Python. It leaves out `dot-claude/rules/`, `dot-claude/commands/` and `dot-claude/keybindings.json`: they sync between machines but may be personal, so the template never ships them (`test_synced_rules_commands_and_keybindings_are_not_published`). Keep the trigger paths in `.github/workflows/publish-public.yml` in step with it; `test_workflow_triggers_match_whitelist` checks.
 
 ## Re-check out a Windows clone after a line-ending change
 

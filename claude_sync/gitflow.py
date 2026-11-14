@@ -748,7 +748,7 @@ def live_matches_commit(ctx: SyncCtx, sha: str, memory_dir: Path) -> bool:
         applied.mkdir()
         _export_commit(ctx, sha, applied, tmp)
         # The export drops empty directories, which sync_capture always creates.
-        for d in ("dot-claude/agents", "dot-claude/hooks", "dot-agents/skills", "memory"):
+        for d in syncfiles._REPO_DIRS:
             (applied / d).mkdir(parents=True, exist_ok=True)
         shutil.copytree(applied, live, symlinks=True)
         profile.profile_capture(

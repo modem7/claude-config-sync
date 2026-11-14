@@ -1,6 +1,6 @@
 # Working in this repo
 
-This repo syncs Claude Code's global config (`CLAUDE.md`, `settings.json`, agents, hooks, skills, memory) between machines. It is AI safe: guidance files for Claude are welcome here. Keep this file short; read the linked docs when a task needs them.
+This repo syncs Claude Code's global config (`CLAUDE.md`, `settings.json`, `keybindings.json`, agents, hooks, rules, commands, skills, memory) between machines. It is AI safe: guidance files for Claude are welcome here. Keep this file short; read the linked docs when a task needs them.
 
 ## How it works
 
@@ -15,6 +15,7 @@ This repo syncs Claude Code's global config (`CLAUDE.md`, `settings.json`, agent
 ## Rules
 
 - Open a PR. Never push to the default branch. `claude-sync.sh` skips syncing (it prints "sync SKIPPED" and exits 0) while this clone is on a feature branch, which is expected.
+- `dot-claude/rules/`, `dot-claude/commands/` and `dot-claude/keybindings.json` sync to every machine but are kept out of `PATHS` in `claude_sync/publish.py`, so the public mirror never gets them.
 - Develop in a separate `git worktree` cut from `origin/<default>`, not in the live clone: while a sync PR is pending, the live clone's working tree carries that pending state.
 - Do not edit `memory/` or `machines/` by hand unless the task is about them. Sync rewrites them.
 - Code, tests and docs outside `machines/`, `memory/`, `private/` and `weekly-review/` must stay generic: placeholder hostnames (`host-a`, `host-b`), no personal paths, names or servers. They are published to the public template.

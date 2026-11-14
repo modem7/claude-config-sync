@@ -338,10 +338,16 @@ You rarely need these.
 | `dot-claude/settings.json` | `~/.claude/settings.json` |
 | `dot-claude/agents/` | `~/.claude/agents/` |
 | `dot-claude/hooks/` | `~/.claude/hooks/` |
+| `dot-claude/rules/` | `~/.claude/rules/` |
+| `dot-claude/commands/` | `~/.claude/commands/` |
+| `dot-claude/keybindings.json` | `~/.claude/keybindings.json` |
 | `dot-agents/skills/` | `~/.agents/skills/` |
 | `memory/` | this machine's primary-project memory folder |
 
 On Windows `~` means `%USERPROFILE%`.
+
+`rules/`, `commands/` and `keybindings.json` are shared by every machine; profiles do not cover them. A machine without them skips them on capture, so the repo copy is kept.
+They are synced but are not part of this template: the public mirror never ships the maintainer's copies, so your repo starts without them.
 
 **Never synced:** `.credentials.json`, `~/.claude.json`, plugin caches, and any session, task or security state.
 
