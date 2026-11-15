@@ -253,6 +253,10 @@ git -C %USERPROFILE%\claude-config reset -q --hard
 
 Or run `install.cmd --repair`, which clones afresh with `-c core.autocrlf=false`. Since `.gitattributes` unsets `text` for `dot-claude/`, `dot-agents/` and `memory/`, git no longer rewrites those files. Re-checking out the clone does not change the live copies: a file that is CRLF in `~/.claude` only because an old clone wrote it that way goes into the next sync's PR as a line-ending-only change, since capture runs first. Before that sync, convert such live files back to LF by hand, or drop the line-ending change from the PR (see `docs/python-port.md`, "Line endings").
 
+## Add an MCP server
+
+Keep the tool surface small, because every tool definition costs tokens each session. Pin the 2 or 3 tools used every session and make the rest discoverable through a search tool, as cognee's MCP does. Default the server to off and enable it on request (see the on-request notes in `memory/`).
+
 ## Audit what a repo costs in tokens (repomix)
 
 Use this when a repo's size matters, for example to find what an agent would read if it packed the repo. Nothing is installed: `npx` fetches a pinned version each time.
