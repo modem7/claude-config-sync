@@ -6,6 +6,7 @@ on:
   pull_request:
     paths:
       - claude_sync/**
+      - scripts/**
       - lib/**
       - tests/py/**
       - "*.sh"
@@ -36,4 +37,4 @@ jobs:
       # Smoke subset only: the Windows-specific paths (links, install, shims,
       # locking). The full suite runs on Linux; on Windows it took 17+ min.
       - name: Run Windows smoke tests
-        run: python -m pytest tests/py/test_dir_links.py tests/py/test_install.py tests/py/test_shims.py tests/py/test_skilllinks.py tests/py/test_lock.py tests/py/test_integration.py tests/py/test_list_disabled.py tests/py/test_mcpdoctor.py -q
+        run: python -m pytest tests/py/test_dir_links.py tests/py/test_install.py tests/py/test_shims.py tests/py/test_skilllinks.py tests/py/test_lock.py tests/py/test_integration.py tests/py/test_safejson.py tests/py/test_list_disabled.py tests/py/test_mcpdoctor.py -q

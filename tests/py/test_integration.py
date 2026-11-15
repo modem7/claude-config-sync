@@ -272,3 +272,56 @@ def test_registry_untouched(home, fake_home, tmp_path):
 ])
 def test_bad_arguments_exit_2(home, args):
     assert _run(*args).returncode == 2
+
+
+def _bare_env() -> dict[str, str]:
+    env = os.environ.copy()
+    env.pop("PYTHONPATH", None)
+    return env
+
+
+def test_runs_from_any_cwd_without_pythonpath(home, tmp_path):
+    cwd = tmp_path / "elsewhere"
+    cwd.mkdir()
+    r = subprocess.run([sys.executable, str(SCRIPT), "enable", "plugin", "b@m"],
+                       capture_output=True, check=False, text=True, encoding="utf-8",
+                       env=_bare_env(), cwd=cwd)
+    assert r.returncode == 0, r.stderr
+    assert r.stdout.splitlines() == ["Enabled plugin b@m in ~/.claude/settings.json.", REMINDER]
+    assert _load(home / ".claude" / "settings.json")["enabledPlugins"]["b@m"] is True
+
+
+def test_runs_through_a_symlinked_install(home, tmp_path):
+    link_dir = tmp_path / "linked" / "scripts"
+    link_dir.mkdir(parents=True)
+    link = link_dir / "integration.py"
+    try:
+        link.symlink_to(SCRIPT)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks not available here")
+    r = subprocess.run([sys.executable, str(link), "enable", "mcp", "plex", "--project", PROJ],
+                       capture_output=True, check=False, text=True, encoding="utf-8",
+                       env=_bare_env(), cwd=tmp_path)
+    assert r.returncode == 0, r.stderr
+    assert _load(home / ".claude.json")["projects"][PROJ]["disabledMcpServers"] == []
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX modes only")
+def test_claude_json_kept_0600_settings_mode_kept(home):
+    cj, settings = home / ".claude.json", home / ".claude" / "settings.json"
+    cj.chmod(0o644)
+    settings.chmod(0o644)
+    _ok("enable", "mcp", "plex", "--project", PROJ)
+    _ok("enable", "plugin", "b@m")
+    assert cj.stat().st_mode & 0o777 == 0o600
+    assert settings.stat().st_mode & 0o777 == 0o644
+    (saved,) = [p / ".claude.json" for p in _backups(home) if (p / ".claude.json").exists()]
+    assert saved.stat().st_mode & 0o777 == 0o600
+
+
+def test_no_temp_files_left(home):
+    _ok("enable", "mcp", "plex", "--project", PROJ)
+    _ok("enable", "plugin", "b@m")
+    left = [p.name for p in list(home.iterdir()) + list((home / ".claude").iterdir())
+            if p.name.endswith(".tmp")]
+    assert left == []

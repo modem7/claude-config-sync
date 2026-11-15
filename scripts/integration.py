@@ -11,7 +11,8 @@ mcp: NAME in disabledMcpServers for one project in ~/.claude.json (--project,
   in that project. skill: move between ~/.claude/skills and
   skills-disabled; refuses if the target exists.
 JSON files are backed up to ~/.claude/.integration-backups/<UTC>/ (newest 10
-kept) and written atomically, keeping other keys, indent and line endings.
+kept) and written atomically, keeping other keys, indent and line endings;
+~/.claude.json is kept at mode 0600. Shares claude_sync/safejson.py.
 MCP fields are never printed; integrations.json is never touched.
 
 Exit codes: 0 done or already so, 1 refused or failed, 2 bad arguments.
@@ -20,18 +21,19 @@ Exit codes: 0 done or already so, 1 refused or failed, 2 bad arguments.
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import re
-import shutil
 import sys
-import tempfile
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-KEEP_BACKUPS = 10
-STAMP = re.compile(r"^\d{8}T\d{12}Z(-\d+)?$")
+# Run as a script, sys.path[0] is scripts/; add the repo root for claude_sync.
+_ROOT = str(Path(__file__).resolve().parent.parent)
+if _ROOT not in sys.path:
+    sys.path.insert(0, _ROOT)
+
+from claude_sync import safejson
+
 REMINDER = "Start a new Claude Code session to load the change."
 
 
@@ -40,75 +42,28 @@ class Refused(Exception):
 
 
 class JsonFile:
-    """A JSON object file plus the layout needed to write it back alike."""
+    """A JSON object file plus the layout needed to write it back alike.
 
-    def __init__(self, path: Path, label: str):
-        self.path, self.label = path, label
+    secret=True keeps the file at mode 0600 (skipped on Windows);
+    otherwise its current mode is kept.
+    """
+
+    def __init__(self, path: Path, label: str, secret: bool = False):
+        self.path, self.label, self.secret = path, label, secret
         try:
-            with open(path, encoding="utf-8", newline="") as f:
-                self.text = f.read()
-            self.mtime = path.stat().st_mtime_ns
-        except FileNotFoundError:
-            raise Refused(f"{label} not found") from None
-        except (OSError, UnicodeDecodeError) as exc:
-            raise Refused(f"cannot read {label}: {exc.__class__.__name__}") from None
-        try:
-            self.data = json.loads(self.text)
-        except ValueError:
-            raise Refused(f"{label} is not valid JSON, left unchanged") from None
+            self.data, self.meta = safejson.read_json_with_meta(path, label)
+        except safejson.SafeJsonError as exc:
+            raise Refused(str(exc)) from None
         if not isinstance(self.data, dict):
             raise Refused(f"{label} is not a JSON object, left unchanged")
 
-    def indent(self) -> str | int:
-        m = re.search(r"\n([ \t]+)\S", self.text)
-        if not m:
-            return 2
-        if m.group(1).startswith("\t"):
-            return "\t"
-        return 4 if len(m.group(1)) == 4 else 2
-
-    def render(self) -> str:
-        out = json.dumps(self.data, indent=self.indent(), ensure_ascii=False)
-        if self.text.endswith("\n"):
-            out += "\n"
-        if "\r\n" in self.text:
-            out = out.replace("\n", "\r\n")
-        return out
-
     def save(self, backups: Path) -> None:
-        backup(self.path, backups)
-        fd, tmp = tempfile.mkstemp(dir=self.path.parent, prefix=f".{self.path.name}.",
-                                   suffix=".tmp")
+        mode = safejson.SECRET_MODE if self.secret else None
         try:
-            with os.fdopen(fd, "w", encoding="utf-8", newline="") as f:
-                f.write(self.render())
-            shutil.copymode(self.path, tmp)
-            if self.path.stat().st_mtime_ns != self.mtime:
-                raise Refused(f"{self.label} changed while editing, try again")
-            os.replace(tmp, self.path)
-        except OSError as exc:
-            raise Refused(f"cannot write {self.label}: {exc.__class__.__name__}") from None
-        finally:
-            if os.path.exists(tmp):
-                os.unlink(tmp)
-
-
-def backup(path: Path, root: Path) -> None:
-    """Copy path into a new UTC-stamped dir under root; keep the newest few."""
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
-    root.mkdir(parents=True, exist_ok=True)
-    target, n = root / stamp, 0
-    while True:
-        try:
-            target.mkdir()
-            break
-        except FileExistsError:
-            n += 1
-            target = root / f"{stamp}-{n}"
-    shutil.copy2(path, target / path.name)
-    dirs = sorted(p.name for p in root.iterdir() if p.is_dir() and STAMP.match(p.name))
-    for old in dirs[:-KEEP_BACKUPS]:
-        shutil.rmtree(root / old, ignore_errors=True)
+            safejson.write_json_atomic(self.path, self.data, self.meta,
+                                       backup_dir=backups, mode=mode)
+        except safejson.SafeJsonError as exc:
+            raise Refused(str(exc)) from None
 
 
 def norm(path: str) -> str:
@@ -166,7 +121,7 @@ def do_plugin(on: bool, name: str, claude: Path, dry: bool) -> str:
 
 
 def do_mcp(on: bool, name: str, home: Path, project: str | None, dry: bool) -> str:
-    f = JsonFile(home / ".claude.json", "~/.claude.json")
+    f = JsonFile(home / ".claude.json", "~/.claude.json", secret=True)
     projects = f.data.get("projects")
     projects = projects if isinstance(projects, dict) else {}
     key = find_project(projects, project)
