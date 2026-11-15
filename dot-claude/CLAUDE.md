@@ -12,13 +12,16 @@ Before exploring code or writing any implementation in a git repository, check:
 
 Do this as the first step of the task, not after implementing something. If the checked-out branch is stale or unrelated to the task at hand, switch to a fresh branch off an up-to-date default branch immediately — before writing any code — rather than discovering the problem at commit/push time and having to rework.
 
-## Integrations that are off until asked
+## Plugins, MCP servers and skills that are not always on
 
-UniFi (plugin `unifi-network@unifi-plugins`), Plex, Sonarr and Radarr (MCP server `plex`) and Home Assistant (MCP server `home-assistant`) are installed but disabled, to save tokens. If the user mentions one of them, or says "you have access to" it, they mean these. Never say it is unavailable. Enable it, then tell them it loads in a new session, and offer to turn it off again afterwards:
+`~/claude-config/integrations.json` records each one in a bucket: `off_until_asked` (installed but disabled, enabled when the user asks), `enabled_per_project` (on only in the listed projects) or `uninstalled` (removed on purpose). Run `python3 ~/claude-config/scripts/list_disabled.py` to see them with enable hints; it is read-only and prints no secrets.
 
-- UniFi: set `enabledPlugins["unifi-network@unifi-plugins"]` to `true` in `~/.claude/settings.json`.
-- Plex or Home Assistant: remove `"plex"` or `"home-assistant"` from `disabledMcpServers` in `~/.claude.json`, under the current project's key (copy the server entry from another project if the current one has none).
-- Back the file up first, edit with `jq`, and never print `~/.claude.json` (it can hold tokens).
+Before you disable, hide, move or remove any plugin, MCP server, skill or agent, ask the user which bucket it goes in, then record it in `integrations.json`. Never pick a bucket yourself.
+
+If the user mentions a tool you cannot see, or says "you have access to" something, check `integrations.json` first: it is probably listed. Never say it is unavailable. Enable it, tell them it loads in a new session, and offer to turn it off again afterwards:
+
+- Run `python3 ~/claude-config/scripts/integration.py enable KIND NAME` (`KIND` is `plugin`, `mcp` or `skill`; add `--project PATH` for an MCP server; use `py -3` on Windows). `disable` reverses it, and `--dry-run` shows the change without making it. It backs up the file first and prints only a one-line result, never an MCP server's command, arguments or environment. Do not edit `~/.claude.json` by hand, and never print it (it can hold tokens).
+- An MCP server that is defined only at user scope cannot be switched per project by this script; say so and ask the user how to proceed.
 
 ## Scratch files and cleanup
 

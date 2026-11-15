@@ -39,6 +39,7 @@ Which doc to update for each kind of change. Read it before opening a PR, then r
 | Differ from the bash on purpose | `docs/python-port.md`, and the docs above for the kind of change. |
 | Find a new failure mode or add a guard | A row in `docs/risks.md` with the guard and the test name. |
 | Change a global instruction | `dot-claude/CLAUDE.md` and the live `~/.claude/CLAUDE.md`, which must stay identical. |
+| Disable, hide or remove a plugin, MCP server, skill or agent | `integrations.json` (the bucket: off until asked, enabled per project or uninstalled; ask the user first), and `docs/runbook.md` if the procedure changes. |
 | Change plugins or `settings.json` | The plugin list in `README.public.md`. |
 | Change the weekly review job (`weekly-review/`) | `weekly-review/README.md` (flags, env vars, config keys and approval files; `schedule/README.md` for scheduling), the `weekly-review/` rows in `docs/risks.md` when a model call, post or guard changes, and the tests under `weekly-review/tests/`. |
 | Add, move or remove a doc | This map, and "Read first" in `CLAUDE.md` if Claude should read it. |

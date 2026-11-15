@@ -1,0 +1,8 @@
+{
+  "_comment": "Copy this file to integrations.json and fill it in. Buckets: off_until_asked (installed, disabled, enabled when you ask), enabled_per_project (on only in the listed projects, matched by folder name), uninstalled (removed on purpose). Entries: kind is plugin, mcp, skill or agent; name is as the harness knows it; optional projects (folder names) and machines (hostnames or profile names; absent means all machines); note is why.",
+  "off_until_asked": [
+    {"kind": "mcp", "name": "example-server", "projects": ["my-project"], "note": "Example only: delete this entry"}
+  ],
+  "enabled_per_project": [],
+  "uninstalled": []
+}

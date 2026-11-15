@@ -307,6 +307,17 @@ It clones the repo to a temp directory, compares `git check-attr` (text, eol, di
 
 Carry each repo's own deliberate lines (for example `dot-claude/** -text`) into the new file, or the check fails. A repo that already has unnormalised files fails too, even if the swap is not the cause. Open the PR only on a pass, and never push to the default branch.
 
+## List what is installed but switched off
+
+Plugins, MCP servers, skills and agents that are not simply always on are recorded in `integrations.json` (repo root) in three buckets: **off until asked** (installed, disabled, enabled when you ask), **enabled per project**, and **uninstalled** (removed on purpose). Before anything is disabled, hidden or removed, Claude asks which bucket it belongs in and records it there. To see the state:
+
+```bash
+python3 ~/claude-config/scripts/list_disabled.py          # text, one section per bucket, with enable hints
+python3 ~/claude-config/scripts/list_disabled.py --json   # same, as JSON
+```
+
+The report compares the registry with the live state and flags mismatches (for example an "off until asked" plugin that is enabled). Anything found disabled, hidden or installed-but-not-enabled that is not in the registry is listed as "Unclassified": decide its bucket and add it to `integrations.json`. It reads `~/.claude/settings.json`, `~/.claude/plugins/installed_plugins.json`, `~/.claude.json` (MCP server names, project paths and transport only; never commands, arguments, environment or URLs), `~/.claude/skills-disabled/`, `~/.claude/agents-disabled/` and the profile `.disabled` markers under `machines/`. It writes nothing. A disabled skill is moved to `~/.claude/skills-disabled/<name>`; move it back to enable it.
+
 ## Checks for each machine
 
 The hooks call `~/claude-config/claude-sync.sh`, a shim that runs the Python. On every machine, check:

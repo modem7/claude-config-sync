@@ -40,7 +40,7 @@ PATHS = (
     "CONTRIBUTING.md", "CLAUDE.md", "AGENTS.md", "LICENSE", ".gitattributes", ".gitignore",
     ".editorconfig", ".wakatime-project", "renovate.json", ".github", "docs", "tests",
     "dot-claude/CLAUDE.md", "dot-claude/settings.json", "dot-claude/hooks", "dot-claude/agents",
-    "dot-agents",
+    "dot-agents", "scripts", "integrations.example.json",
 )
 PUBLIC_DESCRIPTION = b"Sync tool for Claude Code global config (CLAUDE.md, settings, skills) across machines"
 _SLUG_RE = re.compile(r"github\.com[:/]+([^/\s]+/[^/\s]+?)(?:\.git)?/?$")

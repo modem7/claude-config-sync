@@ -521,6 +521,24 @@ A rebuilt machine with the **same hostname** just works, because its config and 
 
 </details>
 
+### Off until asked: keep tools installed, not loaded
+
+Every enabled plugin, MCP server and skill adds tokens to every session. `integrations.json` at the repo root records the ones you keep installed but switched off, in three buckets (copy `integrations.example.json` to `integrations.json` to start; without the file, everything found disabled is just listed as unclassified):
+
+- **Off until asked**: installed and disabled. You tell Claude you want one ("you have access to Home Assistant") and Claude enables it, then tells you it loads in a new session.
+- **Enabled per project**: on only in the listed projects (matched by folder name, so the same entry works on Linux and Windows).
+- **Uninstalled**: removed on purpose, kept on the list so it is not reinstalled by accident.
+
+The registry is shared by every machine, because it syncs with the repo. The live settings (`~/.claude/settings.json`, `~/.claude.json`, `~/.claude/skills-disabled/`) are per machine, so each machine compares its own state against the registry. An entry can name the `machines` it applies to; on a machine where the item is not installed it shows as "not present here", not as an error.
+
+```bash
+python3 ~/claude-config/scripts/list_disabled.py                          # what is off, by bucket, with enable hints
+python3 ~/claude-config/scripts/integration.py enable mcp plex            # turn one on (a new session picks it up)
+python3 ~/claude-config/scripts/integration.py disable plugin unifi-network@unifi-plugins
+```
+
+On Windows run the same commands with `py -3` in place of `python3`. `integration.py` takes `plugin`, `mcp` or `skill` and a name, backs up the file it edits, refuses to write if a running session changed it meanwhile, never prints an MCP server's command, arguments or environment, and does not touch `integrations.json`. An MCP server must be defined in the project you name; one defined only at user scope is refused. The global `CLAUDE.md` tells Claude to ask which bucket a tool belongs in before it disables, hides or removes anything, and then to record the answer in the registry. Anything found disabled that is not in the registry is listed as unclassified. See `docs/runbook.md`, "List what is installed but switched off".
+
 ## Troubleshooting
 
 | Symptom | Try this |
