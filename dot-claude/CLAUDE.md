@@ -12,6 +12,14 @@ Before exploring code or writing any implementation in a git repository, check:
 
 Do this as the first step of the task, not after implementing something. If the checked-out branch is stale or unrelated to the task at hand, switch to a fresh branch off an up-to-date default branch immediately — before writing any code — rather than discovering the problem at commit/push time and having to rework.
 
+## Integrations that are off until asked
+
+UniFi (plugin `unifi-network@unifi-plugins`), Plex, Sonarr and Radarr (MCP server `plex`) and Home Assistant (MCP server `home-assistant`) are installed but disabled, to save tokens. If the user mentions one of them, or says "you have access to" it, they mean these. Never say it is unavailable. Enable it, then tell them it loads in a new session, and offer to turn it off again afterwards:
+
+- UniFi: set `enabledPlugins["unifi-network@unifi-plugins"]` to `true` in `~/.claude/settings.json`.
+- Plex or Home Assistant: remove `"plex"` or `"home-assistant"` from `disabledMcpServers` in `~/.claude.json`, under the current project's key (copy the server entry from another project if the current one has none).
+- Back the file up first, edit with `jq`, and never print `~/.claude.json` (it can hold tokens).
+
 ## Scratch files and cleanup
 
 Put temporary files (commit messages, PR bodies, intermediate output, test scripts) in the session scratchpad directory, never in the project folder or the repo. If the system prompt gives no scratchpad, use a new `mktemp -d` directory. Use the Write tool and pass the path with `git commit -F` or `gh pr create --body-file`.
