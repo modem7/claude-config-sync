@@ -23,6 +23,7 @@ read-tree / checkout-index, which write the bytes themselves.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
@@ -35,7 +36,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
-from claude_sync import machineconf, overlay, profile, safety, skilllinks, syncfiles
+from claude_sync import machineconf, mcpsync, overlay, profile, safety, skilllinks, syncfiles
 from claude_sync.lock import DEFAULT_WAIT, SyncLock
 from claude_sync.memorypath import long_name_warning, resolve_memory_dir
 from claude_sync.util import Fail, redact, run
@@ -261,6 +262,56 @@ def backups_root(ctx: SyncCtx) -> Path:
     """Where apply keeps a copy of each live file it overwrites or deletes,
     one folder per apply. Outside everything capture copies."""
     return ctx.claude_home / syncfiles.BACKUP_DIR
+
+
+# ── MCP servers (opt-in) ─────────────────────────────────────────────────
+# MCP_SYNC=on in the conf, on the full tier, syncs the user-scope servers in
+# ~/.claude.json through mcp/servers.json (claude_sync/mcpsync.py). Off, the
+# file is never opened. Each step works the plan out before it changes
+# anything, so a bad MCP_SYNC= value fails with nothing touched.
+
+
+def mcp_sync_enabled(ctx: SyncCtx) -> bool:
+    """MCP_SYNC=on and not the basic tier. Read afresh each time. Fail for
+    a bad MCP_SYNC= or TIER= value."""
+    if not machineconf.read_machine_mcp_sync(ctx.repo, ctx.hostname):
+        return False
+    return current_tier(ctx) != machineconf.TIER_BASIC
+
+
+def claude_json_path(ctx: SyncCtx) -> Path:
+    """~/.claude.json: next to CLAUDE_HOME, not inside it."""
+    return ctx.claude_home.parent / ".claude.json"
+
+
+def mcp_backups_root(ctx: SyncCtx) -> Path:
+    """Where an MCP apply keeps a copy of ~/.claude.json before it writes.
+    Not syncfiles.BACKUP_DIR, and outside everything capture copies."""
+    return ctx.claude_home / ".claude-sync-mcp-backups"
+
+
+def mcp_policy(ctx: SyncCtx, say: mcpsync.Say = mcpsync.default_say) -> mcpsync.Policy | None:
+    """The rules from the clone's integrations.json, or None (one line said)
+    when it cannot be used, which skips MCP sync for this step."""
+    names = mcpsync.host_names(ctx.hostname, current_profile(ctx))
+    try:
+        policy = mcpsync.load_policy(ctx.repo / "integrations.json", names)
+    except Exception:  # noqa: BLE001 - MCP sync must never abort a sync
+        policy = None
+    if policy is None:
+        say("mcp: integrations.json unreadable, MCP sync skipped")
+    return policy
+
+
+def _mcp_plan(ctx: SyncCtx, say: mcpsync.Say = mcpsync.default_say) -> mcpsync.Policy | None:
+    """The policy when this step syncs MCP servers, else None."""
+    if not mcp_sync_enabled(ctx):
+        return None
+    return mcp_policy(ctx, say)
+
+
+def _quiet(_line: str) -> None:
+    pass
 
 
 def memory_mode(ctx: SyncCtx) -> str:
@@ -866,12 +917,28 @@ def _export_commit(ctx: SyncCtx, sha: str, dest: Path, scratch: Path) -> None:
             )
 
 
+def _canonical_mcp_file(path: Path) -> None:
+    """Rewrites a usable servers file in the form capture writes, so a
+    hand-formatted one does not read as a local edit. Others stay as they are."""
+    if path.is_symlink() or not path.is_file():
+        return
+    try:
+        data = json.loads(path.read_bytes().decode("utf-8"))
+    except (OSError, ValueError):
+        return
+    if isinstance(data, dict) and isinstance(data.get("mcpServers"), dict):
+        path.write_bytes(mcpsync.render_repo(data["mcpServers"]))
+
+
 def live_matches_commit(ctx: SyncCtx, sha: str, memory_dir: Path | None) -> bool:
     """True when the live config is exactly what a clean apply of `sha`
     would have left, i.e. nothing was edited locally since. The capture
     into the scratch tree is the same one a real capture does.
     memory_dir=None leaves memory out of the comparison (basic tier, and
-    memory adoption): the commit's memory/ is copied as is on both sides."""
+    memory adoption): the commit's memory/ is copied as is on both sides.
+    With MCP sync on, the live servers are captured into the scratch
+    mcp/servers.json too, so a local edit to one counts as an edit."""
+    mcp = _mcp_plan(ctx, _quiet)
     with tempfile.TemporaryDirectory(prefix="claude-sync-") as tmp_name:
         tmp = Path(tmp_name)
         applied, live = tmp / "applied", tmp / "live"
@@ -880,10 +947,14 @@ def live_matches_commit(ctx: SyncCtx, sha: str, memory_dir: Path | None) -> bool
         # The export drops empty directories, which sync_capture always creates.
         for d in syncfiles._REPO_DIRS:
             (applied / d).mkdir(parents=True, exist_ok=True)
+        if mcp is not None:
+            _canonical_mcp_file(applied / mcpsync.REPO_FILE)
         shutil.copytree(applied, live, symlinks=True)
         profile.profile_capture(
             live, ctx.claude_home, ctx.agents_home, memory_dir, current_profile(ctx)
         )
+        if mcp is not None:
+            mcpsync.capture(claude_json_path(ctx), live, mcp, _quiet)
         stamp = applied_override_stamp(ctx)
         shared = applied / "dot-claude" / "settings.json"
         if stamp.is_file() and shared.is_file():
@@ -1092,9 +1163,14 @@ def do_capture_and_commit(ctx: SyncCtx) -> bool:
 
     Memory follows memory_mode: left out entirely on the basic tier; on the
     first full-tier capture after basic, adopted (_adopt_memory) and
-    copied in without deleting, after which the tier record is dropped."""
+    copied in without deleting, after which the tier record is dropped.
+
+    With MCP sync on, the eligible live servers are merged into
+    mcp/servers.json last, just before the commit. That step never fails
+    the run."""
     mode = memory_mode(ctx)
     memory_dir = _memory_dir_for(ctx, mode)
+    mcp = _mcp_plan(ctx)
     if mode == MEMORY_OFF:
         _record_memory_off(ctx)
     if not check_capture_is_safe(ctx, memory_dir if mode == MEMORY_ON else None):
@@ -1149,6 +1225,8 @@ def do_capture_and_commit(ctx: SyncCtx) -> bool:
                 _restore_shared_settings(shared, shared_before if had_shared else None)
             raise
 
+    if mcp is not None:
+        mcpsync.capture(claude_json_path(ctx), ctx.repo, mcp, mcpsync.default_say)
     commit_worktree(ctx, f"sync: {ctx.hostname} {_now()}")
     # Live now equals the effective state by construction, so a failed push
     # after this point must not later look like a stale clone.
@@ -1251,7 +1329,13 @@ def apply_local_config(
     copied under backups_root first. The check that the root is a real
     folder runs before anything changes; copies of files the apply put back
     as they were (an override or profile layered on again) are dropped at
-    the end, so an apply that changed nothing leaves no folder."""
+    the end, so an apply that changed nothing leaves no folder.
+
+    With MCP sync on, the eligible repo servers are then merged into
+    ~/.claude.json (backed up under mcp_backups_root). That step never
+    fails the apply; it is worked out first, so a bad MCP_SYNC= value
+    fails before anything changes."""
+    mcp = _mcp_plan(ctx)
     prof = current_profile(ctx)
     backup = None
     if ctx.backups > 0:
@@ -1265,6 +1349,10 @@ def apply_local_config(
         memory_mirror=memory_mirror, backup=backup,
     )
     apply_settings_overlay(ctx)
+    if mcp is not None:
+        mcpsync.apply(
+            claude_json_path(ctx), ctx.repo, mcp, mcp_backups_root(ctx), mcpsync.default_say
+        )
     profile.profile_apply(ctx.repo, ctx.claude_home, ctx.agents_home, prof)
     tracked, disabled = skilllinks.tracked_skills(ctx.repo, profile.profile_dir(ctx.repo, prof))
     skilllinks.wire_skill_links(ctx.claude_home, ctx.agents_home, tracked, disabled)

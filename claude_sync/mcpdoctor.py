@@ -8,7 +8,9 @@ warns about literal credentials and a group- or world-readable file.
 Never prints a server's command, args, env values, url or headers: a
 warning names only where the credential is (env KEY, header KEY, arg #N
 counted from 1, or url). Nothing here is an ISSUE and nothing changes the
-exit code. MCP servers are not synced yet; this is a report only.
+exit code. Each user-scope server also gets a sync status from the same
+mcpsync.classify() that sync uses; they sync only with MCP_SYNC=on in
+machines/<host>.conf on the full tier. Doctor itself only reports.
 """
 
 from __future__ import annotations
@@ -151,10 +153,14 @@ def _header_literal(text: str) -> bool:
     return literal_under(m.group(1), m.group(2))
 
 
-def scan_server(server: dict[str, Any]) -> list[str]:
+def scan_server(server: dict[str, Any], *, scan_command: bool = False) -> list[str]:
     """Where a server holds literal credentials: 'env KEY', 'header KEY',
-    'arg #N' (from 1) or 'url'. Never the value."""
+    'arg #N' (from 1) or 'url', plus 'command' (first) when scan_command is
+    set and the command itself looks like a credential. Never the value."""
     found: list[str] = []
+    command = server.get("command")
+    if scan_command and isinstance(command, str) and _looks_secret(command):
+        found.append("command")
     for field, label in (("env", "env"), ("headers", "header")):
         table = server.get(field)
         if isinstance(table, dict):
@@ -207,35 +213,38 @@ def match(wanted: str, live: list[str]) -> list[str]:
     return exact or [p for p in live if _base(p) == _base(wanted)]
 
 
-def load_registry(path: Path) -> list[tuple[str, str, list[str]]] | None:
-    """(bucket, name, projects) for each mcp entry, or None if unusable."""
+Registry = list[tuple[str, str, list[str], list[str]]]
+
+
+def _strings(value: Any) -> list[str]:
+    return [v for v in value if isinstance(v, str)] if isinstance(value, list) else []
+
+
+def load_registry(path: Path) -> Registry | None:
+    """(bucket, name, projects, machines) for each mcp entry, or None if unusable."""
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
     if not isinstance(data, dict):
         return None
-    out: list[tuple[str, str, list[str]]] = []
+    out: Registry = []
     for bucket in BUCKETS:
         entries = data.get(bucket)
         for e in entries if isinstance(entries, list) else []:
             if isinstance(e, dict) and e.get("kind") == "mcp" and isinstance(e.get("name"), str):
-                projects = e.get("projects")
-                projects = [p for p in projects if isinstance(p, str)] if isinstance(projects, list) else []
-                out.append((bucket, e["name"], projects))
+                out.append((bucket, e["name"], _strings(e.get("projects")), _strings(e.get("machines"))))
     return out
 
 
-def bucket_of(
-    registry: list[tuple[str, str, list[str]]], name: str, project: str | None, live: list[str]
-) -> str:
+def bucket_of(registry: Registry, name: str, project: str | None, live: list[str]) -> str:
     """The registry bucket for a server at user scope (project None) or in a
     live project. An entry with no projects covers every scope; one with
     projects covers the live paths `match` gives (and user scope only for
     uninstalled). A name listed only for other projects says so."""
     exact: list[str] = []
     other: list[str] = []
-    for bucket, entry_name, projects in registry:
+    for bucket, entry_name, projects, _machines in registry:
         if entry_name != name:
             continue
         if not projects or (project is None and bucket == "uninstalled"):
@@ -292,6 +301,55 @@ def _read(path: Path) -> dict[str, Any] | str:
     return data
 
 
+def _sync_state(ctx: SyncCtx) -> tuple[bool, str | None]:
+    """(MCP sync on for this machine, why it is off when that needs saying)."""
+    from claude_sync import gitflow, machineconf
+    from claude_sync.util import Fail
+
+    try:
+        if gitflow.mcp_sync_enabled(ctx):
+            return True, None
+    except OSError:
+        return False, "machine conf not readable"
+    except Fail:
+        try:
+            machineconf.read_machine_mcp_sync(ctx.repo, ctx.hostname)
+        except Fail:
+            return False, "MCP_SYNC value invalid"
+        return False, "TIER value invalid"
+    try:
+        if machineconf.read_machine_mcp_sync(ctx.repo, ctx.hostname):
+            return False, "basic tier"
+    except Fail:
+        return False, "MCP_SYNC value invalid"
+    return False, None
+
+
+def _user_reasons(ctx: SyncCtx, user: dict[str, Any]) -> dict[str, str | None]:
+    """Why each user-scope server is kept local (None: it syncs), from the
+    same policy and classify() that sync uses."""
+    from claude_sync import gitflow, mcpsync
+    from claude_sync.util import Fail
+
+    try:
+        names = mcpsync.host_names(ctx.hostname, gitflow.current_profile(ctx))
+    except (Fail, OSError):
+        names = mcpsync.host_names(ctx.hostname, "")
+    policy = mcpsync.load_policy(ctx.repo / "integrations.json", names)
+    if policy is None:
+        return dict.fromkeys(user, "integrations.json unusable")
+    eligible, skipped = mcpsync.classify(user, policy)
+    reasons: dict[str, str | None] = dict.fromkeys(eligible)
+    reasons.update(skipped)
+    return reasons
+
+
+def _status(on: bool, reason: str | None) -> str:
+    if on:
+        return "sync: yes" if reason is None else f"sync: no ({reason})"
+    return "sync: off" if reason is None else f"sync: off (would be skipped: {reason})"
+
+
 def _report(ctx: SyncCtx) -> list[str]:
     path = ctx.claude_home.parent / ".claude.json"
     data = _read(path)
@@ -312,7 +370,14 @@ def _report(ctx: SyncCtx) -> list[str]:
         if isinstance(table, dict):
             servers += [(n, proj_path, s) for n, s in sorted(table.items()) if isinstance(s, dict)]
 
-    lines = ["MCP servers in ~/.claude.json (read-only report; doctor syncs and changes nothing here):"]
+    on, note = _sync_state(ctx)
+    reasons = _user_reasons(ctx, {n: s for n, p, s in servers if p is None})
+    conf = f"machines/{printable(ctx.hostname)}.conf"
+    headline = (
+        "MCP servers in ~/.claude.json (doctor only reports and changes nothing;"
+        f" user-scope servers sync only with MCP_SYNC=on in {conf}, full tier):"
+    )
+    lines = [headline]
     if registry is None:
         lines.append("  (no usable integrations.json in the repo, so every server is unclassified)")
     warnings: list[str] = []
@@ -322,7 +387,8 @@ def _report(ctx: SyncCtx) -> list[str]:
         scope = "user" if proj_path is None else printable(label or proj_path)
         shown = printable(str(name))
         bucket = bucket_of(registry or [], name, proj_path, live)
-        lines.append(f"  {shown} ({scope}): {_transport(server)}, {bucket}")
+        status = _status(on, reasons.get(name)) if proj_path is None else "sync: no (project scope)"
+        lines.append(f"  {shown} ({scope}): {_transport(server)}, {bucket}; {status}")
         where = scan_server(server)
         if where:
             flagged += 1
@@ -333,9 +399,14 @@ def _report(ctx: SyncCtx) -> list[str]:
     if mode_line:
         lines.append(mode_line)
     n_user = sum(1 for _, p, _ in servers if p is None)
+    n_ok = sum(1 for n, p, _s in servers if p is None and reasons.get(n) is None)
+    state = "on" if on else "off"
+    if note:
+        state += f" ({note})"
     lines.append(
         f"MCP servers: {n_user} user, {len(servers) - n_user} local; {flagged} with literal"
-        " credentials (kept local, they will never sync). Report only: MCP servers are not synced yet."
+        f" credentials (kept local, they will never sync); {n_ok} user-scope eligible to sync."
+        f" MCP sync is {state} for this machine."
     )
     return lines
 

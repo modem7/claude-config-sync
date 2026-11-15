@@ -70,6 +70,7 @@ SOURCE_FILES = {
     "memory/MEMORY.md": b"personal memory\n",
     "private/notes.md": b"private\n",
     "weekly-review/run.py": b"print(1)\n",
+    "mcp/servers.json": b'{"mcpServers": {}}\n',
     "dot-claude/projects/x.json": b"{}\n",
     # Synced to every machine, but may be personal: kept out of the template.
     "dot-claude/rules/personal.md": b"personal rule\n",
@@ -190,7 +191,7 @@ def test_export_never_contains_personal_paths(world):
     tree = _pushed(public)
     for path in tree:
         top = path.split("/", 1)[0]
-        assert top not in ("machines", "memory", "private", "weekly-review"), path
+        assert top not in ("machines", "mcp", "memory", "private", "weekly-review"), path
         assert "/machines/" not in f"/{path}", path
     blobs = run(["git", "-C", str(public), "grep", "-I", "-e", "someone", "main"])
     assert blobs.returncode == 1, blobs.stdout  # no match
@@ -394,3 +395,14 @@ def test_workflow_triggers_match_whitelist():
     # The README the mirror gets, and the bash publisher, also trigger a run.
     allowed = {"README.public.md", "publish-public.sh"} | set(publish.PATHS) | {p + "/**" for p in publish.PATHS}
     assert set(triggers) <= allowed
+
+
+def test_synced_mcp_servers_are_never_published(world):
+    """mcp/servers.json is personal: never in PATHS, never exported."""
+    source, public, _temp, env = world
+    _commit_more(source, {"mcp/servers.json": b'{"mcpServers": {"x": {"command": "npx"}}}\n'})
+    assert publish.publish(source, env) == 0
+    tree = _pushed(public)
+    assert tree, "the export did run"
+    assert not [p for p in tree if p == "mcp" or p.startswith("mcp/")]
+    assert not [p for p in publish.PATHS if p == "mcp" or p.startswith("mcp/")]

@@ -352,7 +352,7 @@ Everything goes through one entry point. On Linux and macOS it is `claude-sync.s
 | `push` | Capture and push this machine's changes and open or update its PR. Does not apply. |
 | `pull` | Bring in the default branch (keeping this machine's unmerged changes) and apply it. |
 | `bootstrap` | The one-time first sync that `install` runs for you. |
-| `doctor` | Check for a stuck sync, list plugins to install, and report MCP servers. Report only. |
+| `doctor` | Check for a stuck sync, list plugins to install, and report MCP servers. Report only; it changes nothing. |
 | `doctor remediate` | Check, and fix what is safe to fix. Never installs plugins. |
 | `doctor install-plugins [--yes]` | Run the plugin commands `doctor` lists, marketplaces first, after a y/N prompt (`--yes` skips it). Stops at the first failure. |
 | `override list` / `add PATH` / `remove PATH` | Manage settings that stay on this machine only. |
@@ -431,7 +431,7 @@ On Windows `~` means `%USERPROFILE%`.
 `rules/`, `commands/` and `keybindings.json` are shared by every machine; profiles do not cover them. A machine without them skips them on capture, so the repo copy is kept.
 They are synced but are not part of this template: the public mirror never ships the maintainer's copies, so your repo starts without them.
 
-**Never synced:** `.credentials.json`, `~/.claude.json`, plugin caches, and any session, task or security state.
+**Never synced:** `.credentials.json`, `~/.claude.json` (except the opt-in merge of its `mcpServers` key, `MCP_SYNC=on`, see below), plugin caches, and any session, task or security state.
 
 **Apply backups:** before `sync`, `pull`, `bootstrap` or `doctor remediate` overwrites or deletes a local file whose bytes differ from what it ends up with, the old file is copied to `~/.claude/.claude-sync-backups/<UTC time>/`, under its path in `~/.claude` (files from `~/.agents` go under `.agents/`). A run that changes nothing makes no folder. The newest 10 are kept (`CLAUDE_SYNC_BACKUPS`). The folder is local only (mode 0700 on Linux and macOS), is never captured, committed or published, and may hold copies of secrets from synced files. Restore steps are in [`docs/runbook.md`](docs/runbook.md).
 
@@ -440,7 +440,7 @@ They are synced but are not part of this template: the public mirror never ships
 
 ### Sync tiers
 
-Each machine has a tier, set by `TIER=` in `machines/<hostname>.conf`:
+Each machine has a tier, set by `TIER=` in `machines/<hostname>.conf` (an optional `MCP_SYNC=on` line there also turns on the MCP server sync, full tier only):
 
 | Tier | Syncs | Installer adds |
 |---|---|---|
@@ -539,7 +539,7 @@ python3 ~/claude-config/scripts/integration.py disable plugin unifi-network@unif
 
 On Windows run the same commands with `py -3` in place of `python3`. `integration.py` takes `plugin`, `mcp` or `skill` and a name, backs up the file it edits, refuses to write if a running session changed it meanwhile, never prints an MCP server's command, arguments or environment, and does not touch `integrations.json`. An MCP server must be defined in the project you name; one defined only at user scope is refused. The global `CLAUDE.md` tells Claude to ask which bucket a tool belongs in before it disables, hides or removes anything, and then to record the answer in the registry. Anything found disabled that is not in the registry is listed as unclassified. See `docs/runbook.md`, "List what is installed but switched off".
 
-**MCP servers (read-only check):** `doctor` also lists the MCP servers in `~/.claude.json` (user scope and each project), with their transport and `integrations.json` bucket, and warns about literal credentials in their env, headers, args or url, and about a `~/.claude.json` other users can read. It names only where a credential is, never its value, command or url, writes nothing, and never changes the exit code. MCP servers are not synced; see `docs/runbook.md`, "MCP servers (read-only check)".
+**MCP servers (opt-in sync):** `doctor` lists the MCP servers in `~/.claude.json` (user scope and each project), with their transport, `integrations.json` bucket and whether they sync, and warns about literal credentials in their env, headers, args, url or command and about a `~/.claude.json` other users can read. It names only where a credential is, never its value, and never changes the exit code. Syncing the user-scope `mcpServers` is off by default: add `MCP_SYNC=on` to `machines/<hostname>.conf` (full tier only; the basic tier and any machine without the line never open `~/.claude.json`). Capture and apply then merge only the top-level `mcpServers` key through the private `mcp/servers.json`, which the public mirror never gets. Apply merges and never replaces: servers that are only local stay. A server is skipped, with one line naming the server and the place, never the value, if it holds a literal credential, is listed in the `off_until_asked` or `uninstalled` bucket of `integrations.json`, is listed with a `machines` list that does not include this host or profile, or has a `command` that is not a bare program name (a path, a `~` form or a Windows file name ending `.cmd`, `.exe`, `.bat`, `.ps1` or `.com`). Deletes are not propagated: removing a server on one machine does not remove it elsewhere. See `docs/runbook.md`, "MCP servers (opt-in sync)".
 
 ## Troubleshooting
 
@@ -639,4 +639,4 @@ This project was vibe-assisted: designed and pair-programmed with [Claude](https
 
 This repo is a published mirror of the tool code (`install.sh`, `claude-sync.sh`, `get.sh`, `get.ps1`, `claude_sync/`, hooks, `tests/`) from its maintainer's private sync repo, with personal and private directories left out. It is not pushed to directly. To update, `git pull` this repo's default branch into your own clone, then re-run `install.sh` or `claude-sync.sh sync`.
 
-The mirror never includes the maintainer's `memory/`, `private/`, `weekly-review/` or `machines/` folders.
+The mirror never includes the maintainer's `memory/`, `private/`, `weekly-review/`, `mcp/` or `machines/` folders.

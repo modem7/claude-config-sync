@@ -11,6 +11,7 @@ from claude_sync.machineconf import (
     write_machine_profile,
 )
 from claude_sync.memorypath import resolve_memory_dir
+from claude_sync.util import Fail
 
 
 def test_machine_conf_path_builds_path_from_repo_and_hostname():
@@ -120,3 +121,52 @@ def test_posix_keeps_a_drive_like_path_as_stored(tmp_path, monkeypatch):
     monkeypatch.setattr(machineconf, "IS_WINDOWS", False)
     write_machine_conf(tmp_path, "host-a", "/z/foo")
     assert read_primary_project_path(tmp_path, "host-a") == "/z/foo"
+
+
+# ── MCP_SYNC= ────────────────────────────────────────────────────────────
+
+
+def test_mcp_sync_is_off_without_a_conf_a_line_a_value_or_with_off(tmp_path):
+    assert machineconf.read_machine_mcp_sync(tmp_path, "host-a") is False
+    write_machine_conf(tmp_path, "host-a", "/p")
+    assert machineconf.read_machine_mcp_sync(tmp_path, "host-a") is False
+    conf = machine_conf_path(tmp_path, "host-a")
+    for line in (b"MCP_SYNC=\n", b"MCP_SYNC=off\n", b"MCP_SYNC=  \n", b"MCP_SYNC=off\r\n"):
+        conf.write_bytes(b"PRIMARY_PROJECT_PATH=/p\n" + line)
+        assert machineconf.read_machine_mcp_sync(tmp_path, "host-a") is False, line
+
+
+def test_mcp_sync_is_on_only_for_on(tmp_path):
+    conf = machine_conf_path(tmp_path, "host-a")
+    conf.parent.mkdir(parents=True)
+    for line in (b"MCP_SYNC=on\n", b"MCP_SYNC= on \n", b"MCP_SYNC=on\r\n"):
+        conf.write_bytes(b"PRIMARY_PROJECT_PATH=/p\n" + line)
+        assert machineconf.read_machine_mcp_sync(tmp_path, "host-a") is True, line
+
+
+@pytest.mark.parametrize("bad", ["On", "yes", "true", "1", "on off"])
+def test_an_unknown_mcp_sync_value_is_a_clear_fail(tmp_path, bad):
+    conf = machine_conf_path(tmp_path, "host-a")
+    conf.parent.mkdir(parents=True)
+    conf.write_bytes(f"MCP_SYNC={bad}\n".encode())
+    with pytest.raises(Fail) as err:
+        machineconf.read_machine_mcp_sync(tmp_path, "host-a")
+    assert "machines/host-a.conf" in err.value.message
+    assert "'on' or 'off'" in err.value.hint
+    assert str(conf) in err.value.hint
+
+
+def test_write_machine_mcp_sync_keeps_other_lines_and_off_removes_the_line(tmp_path):
+    conf = machine_conf_path(tmp_path, "host-a")
+    conf.parent.mkdir(parents=True)
+    original = b"# note \xff\nPRIMARY_PROJECT_PATH=/p\nTIER=full\nEXTRA=1"
+    conf.write_bytes(original)
+    machineconf.write_machine_mcp_sync(tmp_path, "host-a", True)
+    assert conf.read_bytes() == original + b"\nMCP_SYNC=on\n"
+    machineconf.write_machine_mcp_sync(tmp_path, "host-a", True)
+    assert conf.read_bytes().count(b"MCP_SYNC=") == 1
+    assert machineconf.read_machine_mcp_sync(tmp_path, "host-a") is True
+    assert read_primary_project_path(tmp_path, "host-a") == "/p"
+    machineconf.write_machine_mcp_sync(tmp_path, "host-a", False)
+    assert conf.read_bytes() == original + b"\n"
+    assert machineconf.read_machine_mcp_sync(tmp_path, "host-a") is False

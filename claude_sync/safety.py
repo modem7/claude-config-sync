@@ -13,7 +13,8 @@ from claude_sync.util import Fail
 DENYLISTED_FILENAMES = (".credentials.json", ".claude.json")
 
 # Top-level paths the public mirror must never get (the entry and all under it).
-PRIVATE_TOP_LEVEL = ("machines", "memory", "private", "weekly-review")
+# mcp/ holds the user-scope MCP servers this user syncs (claude_sync/mcpsync.py).
+PRIVATE_TOP_LEVEL = ("machines", "mcp", "memory", "private", "weekly-review")
 
 
 def assert_no_denylisted_files(root: Path) -> None:
@@ -31,7 +32,7 @@ def assert_no_denylisted_files(root: Path) -> None:
 def assert_public_tree_clean(root: Path) -> None:
     """Raise Fail listing per-machine or personal content in a tree to publish.
 
-    Leaks are machines/, memory/, private/ and weekly-review/ at the top level,
+    Leaks are machines/, mcp/, memory/, private/ and weekly-review/ at the top level,
     and any *.settings.json below a directory named machines at any depth.
     A top-level .git is skipped. Paths are reported as "./<relative path>".
     """

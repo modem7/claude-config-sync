@@ -50,7 +50,7 @@ def test_public_clean_passes(tmp_path):
     assert_public_tree_clean(tmp_path)
 
 
-@pytest.mark.parametrize("top", ["machines", "memory", "private", "weekly-review"])
+@pytest.mark.parametrize("top", ["machines", "mcp", "memory", "private", "weekly-review"])
 def test_public_blocks_top_level_dirs(tmp_path, top):
     _write(tmp_path / top / "host-a" / "f.txt")
     with pytest.raises(Fail) as exc:
@@ -90,3 +90,10 @@ def test_public_does_not_follow_symlinks(tmp_path):
     except OSError:
         pytest.skip("symlinks unavailable")
     assert_public_tree_clean(tree)
+
+
+def test_public_blocks_synced_mcp_servers(tmp_path):
+    _write(tmp_path / "mcp" / "servers.json", '{"mcpServers": {}}')
+    with pytest.raises(Fail) as exc:
+        assert_public_tree_clean(tmp_path)
+    assert "./mcp" in str(exc.value)

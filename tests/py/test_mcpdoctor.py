@@ -47,6 +47,18 @@ def write_config(ctx: SyncCtx, data: object, mode: int = 0o600) -> Path:
     return path
 
 
+HEADLINE = (
+    "MCP servers in ~/.claude.json (doctor only reports and changes nothing;"
+    " user-scope servers sync only with MCP_SYNC=on in machines/host-a.conf, full tier):"
+)
+
+
+def write_conf(ctx: SyncCtx, text: str) -> None:
+    machines = ctx.repo / "machines"
+    machines.mkdir(exist_ok=True)
+    (machines / f"{ctx.hostname}.conf").write_text(text, encoding="utf-8")
+
+
 def report(ctx: SyncCtx) -> str:
     return "\n".join(mcpdoctor.mcp_report(ctx))
 
@@ -108,10 +120,14 @@ def test_user_and_local_scope_with_transport(tmp_path):
     })
     lines = mcpdoctor.mcp_report(ctx)
     text = "\n".join(lines)
-    assert "  docs (user): http, unclassified" in lines
-    assert "  files (alpha): stdio, unclassified" in lines
-    assert lines[-1].startswith("MCP servers: 1 user, 1 local; 0 with literal credentials")
-    assert "not synced yet" in lines[-1]
+    assert "  docs (user): http, unclassified; sync: off" in lines
+    assert "  files (alpha): stdio, unclassified; sync: no (project scope)" in lines
+    assert lines[0] == HEADLINE
+    assert lines[-1] == (
+        "MCP servers: 1 user, 1 local; 0 with literal credentials (kept local, they will never sync);"
+        " 1 user-scope eligible to sync. MCP sync is off for this machine."
+    )
+    assert "not synced yet" not in text
     # Never the command, args, url or other keys.
     for hidden in ("npx", "@scope/pkg", "example.invalid", "someone"):
         assert hidden not in text
@@ -239,19 +255,21 @@ def test_bucket_labels(tmp_path):
         },
     })
     lines = mcpdoctor.mcp_report(ctx)
-    assert "  old (user): stdio, uninstalled" in lines
-    assert "  media (user): stdio, off_until_asked (listed for other projects)" in lines
-    assert "  media (alpha): stdio, off_until_asked" in lines  # basename fallback
-    assert "  files (alpha): stdio, unclassified" in lines  # a plugin entry is not an mcp one
-    assert "  notes (beta): stdio, enabled_per_project" in lines
-    assert "  notes (gamma): stdio, enabled_per_project (listed for other projects)" in lines
+    off = "sync: off (would be skipped: registry: "
+    assert f"  old (user): stdio, uninstalled; {off}uninstalled)" in lines
+    assert f"  media (user): stdio, off_until_asked (listed for other projects); {off}off_until_asked)" in lines
+    local = "; sync: no (project scope)"
+    assert f"  media (alpha): stdio, off_until_asked{local}" in lines  # basename fallback
+    assert f"  files (alpha): stdio, unclassified{local}" in lines  # a plugin entry is not an mcp one
+    assert f"  notes (beta): stdio, enabled_per_project{local}" in lines
+    assert f"  notes (gamma): stdio, enabled_per_project (listed for other projects){local}" in lines
 
 
 def test_no_registry_means_unclassified(tmp_path):
     ctx = make_ctx(tmp_path)
     write_config(ctx, {"mcpServers": {"a": {}}})
     lines = mcpdoctor.mcp_report(ctx)
-    assert "  a (user): stdio, unclassified" in lines
+    assert "  a (user): stdio, unclassified; sync: off" in lines
     assert any("no usable integrations.json" in line for line in lines)
 
 
@@ -357,3 +375,133 @@ def test_doctor_without_claude_json_says_skipped(world):
     rc, out = _doctor(world, a)
     assert rc == 0, out
     assert "MCP check skipped: ~/.claude.json not found." in out
+
+
+# ── scan_command and the machines element (used by mcpsync) ──────────────
+
+
+@pytest.mark.parametrize("command", ["npx", "uvx", "node", "docker", "python", "/usr/bin/node", "C:\\x\\npx.cmd"])
+def test_scan_command_ignores_program_names(command):
+    assert mcpdoctor.scan_server({"command": command}, scan_command=True) == []
+
+
+def test_scan_command_flags_a_literal_only_when_asked():
+    literal = "sk-" + "Zq9x" * 8
+    assert mcpdoctor.scan_server({"command": literal}) == []
+    assert mcpdoctor.scan_server({"command": literal, "env": {"API_TOKEN": FAKE_TOKEN}}, scan_command=True) == [
+        "command", "env API_TOKEN"]
+
+
+def test_load_registry_machines(tmp_path):
+    path = tmp_path / "integrations.json"
+    path.write_text(json.dumps({
+        "off_until_asked": [
+            {"kind": "mcp", "name": "a", "machines": ["host-a", 3, "host-b"]},
+            {"kind": "mcp", "name": "b"},
+            {"kind": "mcp", "name": "c", "machines": "host-a", "projects": ["/p", None]},
+        ],
+    }), encoding="utf-8")
+    assert mcpdoctor.load_registry(path) == [
+        ("off_until_asked", "a", [], ["host-a", "host-b"]),
+        ("off_until_asked", "b", [], []),
+        ("off_until_asked", "c", ["/p"], []),
+    ]
+
+
+# ── sync status per server ───────────────────────────────────────────────
+
+
+def _line(lines: list[str], name: str) -> str:
+    return next(line for line in lines if line.startswith(f"  {name} ("))
+
+
+def test_sync_on_says_yes_and_no_with_reasons(tmp_path):
+    ctx = make_ctx(tmp_path, {"off_until_asked": [{"kind": "mcp", "name": "paused"}]})
+    write_conf(ctx, "MCP_SYNC=on\n")
+    write_config(ctx, {
+        "mcpServers": {
+            "shared": {"command": "npx", "args": ["-y", "@scope/pkg"]},
+            "paused": {"command": "npx"},
+            "leaky": {"command": "npx", "env": {"SERVICE_TOKEN": FAKE_TOKEN}},
+            "pathy": {"command": "/opt/tool/bin/server"},
+            "remote": {"type": "http", "url": "https://example.invalid/mcp"},
+        },
+        "projects": {"/home/user/project/alpha": {"mcpServers": {"files": {"command": "npx"}}}},
+    })
+    lines = mcpdoctor.mcp_report(ctx)
+    assert _line(lines, "shared").endswith("; sync: yes")
+    assert _line(lines, "remote").endswith("; sync: yes")
+    assert _line(lines, "paused").endswith("; sync: no (registry: off_until_asked)")
+    assert _line(lines, "leaky").endswith("; sync: no (literal credential in env SERVICE_TOKEN)")
+    assert _line(lines, "pathy").endswith("; sync: no (command is not a bare program name, kept local)")
+    assert _line(lines, "files").endswith("; sync: no (project scope)")
+    assert lines[-1].endswith("; 2 user-scope eligible to sync. MCP sync is on for this machine.")
+    text = "\n".join(lines)
+    assert_no_secret(text)
+    assert "/opt/tool" not in text
+
+
+def test_sync_off_keeps_the_reason(tmp_path):
+    ctx = make_ctx(tmp_path)
+    write_conf(ctx, "MCP_SYNC=off\n")
+    write_config(ctx, {"mcpServers": {
+        "shared": {"command": "npx"},
+        "leaky": {"command": "npx", "env": {"FOO": FAKE_PREFIXED}},
+    }})
+    lines = mcpdoctor.mcp_report(ctx)
+    assert _line(lines, "shared").endswith("; sync: off")
+    assert _line(lines, "leaky").endswith("; sync: off (would be skipped: literal credential in env FOO)")
+    assert lines[-1].endswith("MCP sync is off for this machine.")
+    assert_no_secret("\n".join(lines))
+
+
+def test_basic_tier_is_off(tmp_path):
+    ctx = make_ctx(tmp_path)
+    write_conf(ctx, "TIER=basic\nMCP_SYNC=on\n")
+    write_config(ctx, {"mcpServers": {"shared": {"command": "npx"}}})
+    lines = mcpdoctor.mcp_report(ctx)
+    assert _line(lines, "shared").endswith("; sync: off")
+    assert lines[-1].endswith("MCP sync is off (basic tier) for this machine.")
+
+
+def test_invalid_mcp_sync_value_is_off_with_a_note(tmp_path):
+    ctx = make_ctx(tmp_path)
+    write_conf(ctx, "MCP_SYNC=" + FAKE_PASSWORD + "\n")
+    write_config(ctx, {"mcpServers": {"shared": {"command": "npx"}}})
+    lines = mcpdoctor.mcp_report(ctx)
+    assert _line(lines, "shared").endswith("; sync: off")
+    assert lines[-1].endswith("MCP sync is off (MCP_SYNC value invalid) for this machine.")
+    assert_no_secret("\n".join(lines))
+
+
+def test_invalid_tier_value_is_off_with_a_note(tmp_path):
+    ctx = make_ctx(tmp_path)
+    write_conf(ctx, "TIER=" + FAKE_PASSWORD + "\nMCP_SYNC=on\n")
+    write_config(ctx, {"mcpServers": {"shared": {"command": "npx"}}})
+    lines = mcpdoctor.mcp_report(ctx)
+    assert _line(lines, "shared").endswith("; sync: off")
+    assert lines[-1].endswith("MCP sync is off (TIER value invalid) for this machine.")
+    assert_no_secret("\n".join(lines))
+
+
+@pytest.mark.parametrize(("machines", "conf", "want"), [
+    (["host-b"], "MCP_SYNC=on\n", "sync: no (per-machine, not listed for this host)"),
+    (["host-b", "HOST-A"], "MCP_SYNC=on\n", "sync: yes"),
+    (["prof-x"], "MCP_SYNC=on\nPROFILE=prof-x\n", "sync: yes"),
+    (["host-b"], "", "sync: off (would be skipped: per-machine, not listed for this host)"),
+], ids=["excludes-host", "includes-host", "via-profile", "excluded-and-off"])
+def test_per_machine(tmp_path, machines, conf, want):
+    ctx = make_ctx(tmp_path, {"enabled_per_project": [{"kind": "mcp", "name": "shared", "machines": machines}]})
+    write_conf(ctx, conf)
+    write_config(ctx, {"mcpServers": {"shared": {"command": "npx"}}})
+    assert _line(mcpdoctor.mcp_report(ctx), "shared").endswith("; " + want)
+
+
+def test_unusable_registry_blocks_sync(tmp_path):
+    ctx = make_ctx(tmp_path)
+    (ctx.repo / "integrations.json").write_text("{", encoding="utf-8")
+    write_conf(ctx, "MCP_SYNC=on\n")
+    write_config(ctx, {"mcpServers": {"shared": {"command": "npx"}}})
+    lines = mcpdoctor.mcp_report(ctx)
+    assert _line(lines, "shared").endswith("; sync: no (integrations.json unusable)")
+    assert lines[-1].endswith("; 0 user-scope eligible to sync. MCP sync is on for this machine.")

@@ -257,15 +257,24 @@ Or run `install.cmd --repair`, which clones afresh with `-c core.autocrlf=false`
 
 Keep the tool surface small, because every tool definition costs tokens each session. Pin the 2 or 3 tools used every session and make the rest discoverable through a search tool, as cognee's MCP does. Default the server to off and enable it on request (see the on-request notes in `memory/`).
 
-## MCP servers (read-only check)
+## MCP servers (opt-in sync)
 
-`claude-sync.sh doctor` reads `~/.claude.json` (next to `~/.claude`) and lists each MCP server: its name, scope (`user`, or the project folder's name), transport (the `type` field: `stdio` when unset, `http`, `sse`, `ws` or `sdk`, else `unknown`) and its bucket in `integrations.json` (`unclassified` if none; "listed for other projects" if the entry names other projects). Project matching is the same as `scripts/list_disabled.py`: the exact path first, else the same folder name. A `machines` list in the registry is not checked here.
+`claude-sync.sh doctor` reads `~/.claude.json` (next to `~/.claude`) and lists each MCP server: its name, scope (`user`, or the project folder's name), transport (the `type` field: `stdio` when unset, `http`, `sse`, `ws` or `sdk`, else `unknown`) and its bucket in `integrations.json` (`unclassified` if none; "listed for other projects" if the entry names other projects). Project matching is the same as `scripts/list_disabled.py`: the exact path first, else the same folder name. An entry with a `machines` list that does not include this host (or its profile), matched as in `scripts/list_disabled.py`, is per-machine and shows as not syncing.
 
-- It warns `WARNING: MCP server <name> (<scope>): literal credential in <env KEY | header KEY | arg #N | url>`. `arg #N` counts from 1. It names the place only, never the value.
+- It warns `WARNING: MCP server <name> (<scope>): literal credential in <env KEY | header KEY | arg #N | url | command>`. `arg #N` counts from 1. It names the place only, never the value.
 - Allowed: an empty value, or only `${VAR}` / `${VAR:-default}` references (`Bearer ${VAR}` too). Flagged: a literal under a secret-like name (token, key, secret, password, auth, bearer, credential, cookie), a value shaped like a known token, a long random-looking string, `--token value` style args, and a url with a password or a secret-named query parameter.
 - It warns if `~/.claude.json` can be read by group or others (not on Windows); `chmod 600 ~/.claude.json` fixes it.
 - It ends with one summary line. Warnings are not issues and never change the exit code. If the file is missing or not valid JSON it prints one "MCP check skipped" line.
-- It writes nothing and syncs nothing. Literal credentials stay in `~/.claude.json` on this machine; to move one out, put it in an environment variable and use `${VAR}`.
+- `doctor` writes nothing. Literal credentials stay in `~/.claude.json` on this machine; to move one out, put it in an environment variable and use `${VAR}`.
+
+**Turning sync on.** Add `MCP_SYNC=on` to `machines/<hostname>.conf` (remove the line to turn it off). Full tier only: with `TIER=basic`, or without the line, sync never opens `~/.claude.json`. Do not turn it on for a machine you have not looked at with `doctor` first.
+
+- Capture reads only the top-level `mcpServers` of `~/.claude.json` (never `projects.*` or any other key) and merges the servers that pass the checks below into `mcp/servers.json` in the repo (live wins a name clash; nothing is removed from the repo file). The file is private: `mcp/` is in `PRIVATE_TOP_LEVEL`, so the public mirror refuses it.
+- Apply merges the repo's servers into the live `mcpServers`. Every live server stays: refused ones, per-machine ones and ones the repo lacks. If a live entry of the same name would itself be refused (a literal token, a Windows path), it is kept as it is. Only `mcpServers` changes; every other key keeps its value and order.
+- Skipped, with one line `mcp: skipped <server>: <reason>` (the place of a credential such as `env KEY` or `arg #2`, never its value; sync does not fail): a literal credential in env, headers, args, url or command; a registry entry in `off_until_asked` or `uninstalled` (matched by name, whatever its `projects`, because `integration.py` cannot switch user-scope servers); a registry entry whose `machines` list lacks this host or profile; a `command` that is not a bare program name (a path, a `~` form, `.cmd`, `.exe`, `.bat`, `.ps1`, `.com`; they are flagged, never rewritten, on every OS).
+- The write goes through `claude_sync/safejson.py`: it re-checks size and mtime just before the swap (Claude Code rewrites this file; the step retries three times, then skips with one line), backs the file up to `~/.claude/.claude-sync-mcp-backups/` (newest 10 kept), keeps mode 0600, and does nothing when the merge equals the live file.
+- Deletes do not propagate (there is no base snapshot to tell a removed server from a new one). To remove a server everywhere, remove it from `~/.claude.json` on each machine and from `mcp/servers.json` in the repo.
+- A moved clone together with a local edit to `mcpServers` makes capture refuse, like any other local edit; run `pull` after saving your edit elsewhere.
 
 ## Audit what a repo costs in tokens (repomix)
 
