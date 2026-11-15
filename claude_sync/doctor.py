@@ -29,7 +29,7 @@ from collections.abc import Callable
 from contextlib import ExitStack
 from dataclasses import dataclass, field
 
-from claude_sync import gitflow, machineconf, overlay, pr, profile, syncfiles
+from claude_sync import gitflow, machineconf, mcpdoctor, overlay, pr, profile, syncfiles
 from claude_sync.gitflow import SyncCtx
 from claude_sync.memorypath import long_name_warning
 from claude_sync.syncfiles import _remove
@@ -120,6 +120,11 @@ def do_doctor(
     # Report only, never an ISSUE: remediate could not fix it, since doctor
     # never installs anything (only the separate install-plugins does).
     for line in plugin_report(ctx):
+        print(line)
+
+    # Report only too: MCP warnings are never an ISSUE (literal secrets in
+    # ~/.claude.json are normal), and the check reads, never writes.
+    for line in mcpdoctor.mcp_report(ctx):
         print(line)
 
     if not report.issues:

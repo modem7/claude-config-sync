@@ -257,6 +257,16 @@ Or run `install.cmd --repair`, which clones afresh with `-c core.autocrlf=false`
 
 Keep the tool surface small, because every tool definition costs tokens each session. Pin the 2 or 3 tools used every session and make the rest discoverable through a search tool, as cognee's MCP does. Default the server to off and enable it on request (see the on-request notes in `memory/`).
 
+## MCP servers (read-only check)
+
+`claude-sync.sh doctor` reads `~/.claude.json` (next to `~/.claude`) and lists each MCP server: its name, scope (`user`, or the project folder's name), transport (the `type` field: `stdio` when unset, `http`, `sse`, `ws` or `sdk`, else `unknown`) and its bucket in `integrations.json` (`unclassified` if none; "listed for other projects" if the entry names other projects). Project matching is the same as `scripts/list_disabled.py`: the exact path first, else the same folder name. A `machines` list in the registry is not checked here.
+
+- It warns `WARNING: MCP server <name> (<scope>): literal credential in <env KEY | header KEY | arg #N | url>`. `arg #N` counts from 1. It names the place only, never the value.
+- Allowed: an empty value, or only `${VAR}` / `${VAR:-default}` references (`Bearer ${VAR}` too). Flagged: a literal under a secret-like name (token, key, secret, password, auth, bearer, credential, cookie), a value shaped like a known token, a long random-looking string, `--token value` style args, and a url with a password or a secret-named query parameter.
+- It warns if `~/.claude.json` can be read by group or others (not on Windows); `chmod 600 ~/.claude.json` fixes it.
+- It ends with one summary line. Warnings are not issues and never change the exit code. If the file is missing or not valid JSON it prints one "MCP check skipped" line.
+- It writes nothing and syncs nothing. Literal credentials stay in `~/.claude.json` on this machine; to move one out, put it in an environment variable and use `${VAR}`.
+
 ## Audit what a repo costs in tokens (repomix)
 
 Use this when a repo's size matters, for example to find what an agent would read if it packed the repo. Nothing is installed: `npx` fetches a pinned version each time.

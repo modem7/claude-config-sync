@@ -352,7 +352,7 @@ Everything goes through one entry point. On Linux and macOS it is `claude-sync.s
 | `push` | Capture and push this machine's changes and open or update its PR. Does not apply. |
 | `pull` | Bring in the default branch (keeping this machine's unmerged changes) and apply it. |
 | `bootstrap` | The one-time first sync that `install` runs for you. |
-| `doctor` | Check for a stuck sync, and list plugins to install. Report only. |
+| `doctor` | Check for a stuck sync, list plugins to install, and report MCP servers. Report only. |
 | `doctor remediate` | Check, and fix what is safe to fix. Never installs plugins. |
 | `doctor install-plugins [--yes]` | Run the plugin commands `doctor` lists, marketplaces first, after a y/N prompt (`--yes` skips it). Stops at the first failure. |
 | `override list` / `add PATH` / `remove PATH` | Manage settings that stay on this machine only. |
@@ -538,6 +538,8 @@ python3 ~/claude-config/scripts/integration.py disable plugin unifi-network@unif
 ```
 
 On Windows run the same commands with `py -3` in place of `python3`. `integration.py` takes `plugin`, `mcp` or `skill` and a name, backs up the file it edits, refuses to write if a running session changed it meanwhile, never prints an MCP server's command, arguments or environment, and does not touch `integrations.json`. An MCP server must be defined in the project you name; one defined only at user scope is refused. The global `CLAUDE.md` tells Claude to ask which bucket a tool belongs in before it disables, hides or removes anything, and then to record the answer in the registry. Anything found disabled that is not in the registry is listed as unclassified. See `docs/runbook.md`, "List what is installed but switched off".
+
+**MCP servers (read-only check):** `doctor` also lists the MCP servers in `~/.claude.json` (user scope and each project), with their transport and `integrations.json` bucket, and warns about literal credentials in their env, headers, args or url, and about a `~/.claude.json` other users can read. It names only where a credential is, never its value, command or url, writes nothing, and never changes the exit code. MCP servers are not synced; see `docs/runbook.md`, "MCP servers (read-only check)".
 
 ## Troubleshooting
 
