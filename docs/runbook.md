@@ -253,6 +253,56 @@ git -C %USERPROFILE%\claude-config reset -q --hard
 
 Or run `install.cmd --repair`, which clones afresh with `-c core.autocrlf=false`. Since `.gitattributes` unsets `text` for `dot-claude/`, `dot-agents/` and `memory/`, git no longer rewrites those files. Re-checking out the clone does not change the live copies: a file that is CRLF in `~/.claude` only because an old clone wrote it that way goes into the next sync's PR as a line-ending-only change, since capture runs first. Before that sync, convert such live files back to LF by hand, or drop the line-ending change from the PR (see `docs/python-port.md`, "Line endings").
 
+## Audit what a repo costs in tokens (repomix)
+
+Use this when a repo's size matters, for example to find what an agent would read if it packed the repo. Nothing is installed: `npx` fetches a pinned version each time.
+
+```bash
+cd ~/some-repo
+npx repomix@1.19.0 --token-count-tree --ignore '.git/**,private/**' -o "$(mktemp -d)/pack.xml"
+```
+
+- The tree lists tokens per file and folder (`o200k_base`, so an estimate, not a Claude count). Read the tree; the pack file is a by-product and can be deleted.
+- Write the output to a scratch directory, never into the repo.
+- Most of a repo is never loaded into a session. Only the global `CLAUDE.md`, the memory index and skill and agent descriptions are, so for session cost use the harness-context measurement in modem7/claude-config#86 and not this tree.
+- The security check may flag test fixtures that hold fake tokens. Open the flagged files before trusting or ignoring them.
+
+## Convert Office files and PDFs to Markdown (markitdown)
+
+`markitdown` (MIT, Microsoft) converts docx, pptx, xlsx, EPUB, HTML, CSV, JSON and PDF to Markdown on this machine. Run it through `uvx` as a one-off, with no MCP server, so it costs no tokens per session:
+
+```bash
+uvx --from 'markitdown[pdf]' markitdown report.pdf > report.md
+uvx --from 'markitdown[docx,pptx,xlsx]' markitdown deck.pptx > deck.md
+```
+
+- For a PDF alone, `pdftotext -layout` is as good. markitdown output is 15 to 18% smaller and keeps headings and ticked items, but it does not normalise ligatures (`oﬃcial`, `puriﬁcation`). Clean those up before searching or diffing, and do not feed its output to a diff of the source text.
+- Prefer markitdown for Office formats, where it replaces a separate tool per format.
+- Leave the Azure Document Intelligence, LLM caption and hosted transcription extras off. They send the file off the machine.
+
+## List issues that are ready to work on
+
+GitHub tracks "blocked by" links natively, so no label or convention is needed. In the issue sidebar, add the blocker under Relationships. Then list the open issues with no open blocker:
+
+```bash
+gh api 'repos/OWNER/REPO/issues?state=open&per_page=100' \
+  --jq '.[] | select(.pull_request|not) | select(.issue_dependencies_summary.blocked_by==0) | "#\(.number)\t\(.title)"'
+```
+
+The API returns pull requests in the same list, so the filter drops them. `blocked_by` is the blocker count in the issue summary; check on a real blocked issue that it drops to 0 once the blocker closes. Past 100 open issues, add `--paginate`. This is the one idea taken from beads; the rest of beads was skipped (see modem7/claude-config#86).
+
+## Check a smaller `.gitattributes` is safe
+
+Before replacing a repo's `.gitattributes` with a shorter one, prove it changes nothing real:
+
+```bash
+python3 scripts/gitattributes_check.py ~/some-repo /path/to/new-gitattributes
+```
+
+It clones the repo to a temp directory, compares `git check-attr` (text, eol, diff, merge, binary) for every tracked file before and after, then runs `git add --renormalize .` in the clone. Your repo is not touched. Exit 0 means no real attribute change and no renormalize change; 1 means there is one (listed); 2 is a usage or git error. A `text` rule going from forced to `auto` is reported as a soft change and does not fail the check.
+
+Carry each repo's own deliberate lines (for example `dot-claude/** -text`) into the new file, or the check fails. A repo that already has unnormalised files fails too, even if the swap is not the cause. Open the PR only on a pass, and never push to the default branch.
+
 ## Checks for each machine
 
 The hooks call `~/claude-config/claude-sync.sh`, a shim that runs the Python. On every machine, check:
