@@ -179,12 +179,9 @@
     "code-review@claude-plugins-official": true,
     "commit-commands@claude-plugins-official": true,
     "security-guidance@claude-plugins-official": true,
-    "context7@claude-plugins-official": false,
     "docker@claude-plugins-official": false,
     "superpowers@superpowers-marketplace": true,
-    "deployment-engineer@awesome-claude-code-plugins": false,
     "crowdsec@crowdsecurity": false,
-    "andrej-karpathy-skills@karpathy-skills": false,
     "i-have-adhd@i-have-adhd": false,
     "claude-code-wakatime@wakatime": true
   },
@@ -227,9 +224,9 @@
     }
   },
   "advisorModel": "opus",
+  "pluginConfigs": {},
   "theme": "dark",
   "remoteControlAtStartup": true,
   "inputNeededNotifEnabled": true,
-  "agentPushNotifEnabled": true,
-  "pluginConfigs": {}
+  "agentPushNotifEnabled": true
 }
