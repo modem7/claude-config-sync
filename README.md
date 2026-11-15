@@ -9,6 +9,7 @@
 ![Windows](https://img.shields.io/badge/Windows-supported-success)
 ![macOS](https://img.shields.io/badge/macOS-untested-lightgrey)
 ![Dependencies](https://img.shields.io/badge/dependencies-none-lightgrey)
+[![Built with Claude](https://img.shields.io/badge/built%20with-Claude-D97757?logo=claude&logoColor=white)](https://claude.com/claude-code)
 
 [Prerequisites](#prerequisites) • [Quick start](#quick-start) • [Make it work](#make-it-work) • [Commands](#commands) • [What syncs](#what-syncs) • [Per-machine tweaks](#per-machine-tweaks) • [Troubleshooting](#troubleshooting)
 
@@ -609,6 +610,10 @@ Browse [claudedirectory.org](https://www.claudedirectory.org) and the official p
 | [`CONTRIBUTING.md`](CONTRIBUTING.md) | Working on the tool itself. |
 
 Design rationale: `docs/superpowers/specs/2026-07-25-claude-config-sync-design.md` and the matching plan in `docs/superpowers/plans/`.
+
+## How this was built
+
+This project was vibe-assisted: designed and pair-programmed with [Claude](https://claude.com/claude-code). A human sets the direction and reviews every change, and Claude writes much of the code, tests and docs. Treat it like any other tool: read what it does before you run it, and see [`docs/risks.md`](docs/risks.md).
 
 ## Getting updates to this tool
 
