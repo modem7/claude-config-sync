@@ -611,7 +611,7 @@ Neither download is hash-checked. Both are skipped with a message, not an error,
 `dot-claude/settings.json` and `dot-agents/skills/` ship with one person's picks. Prune, replace or ignore them.
 
 - **Plugins:** `frontend-design`, `code-review`, `commit-commands`, `security-guidance`, `context7`, `docker`, `superpowers`, `deployment-engineer` and a few others.
-- **Skills:** `find-skills`, `usage-audit` and `diagram-rules` as examples.
+- **Skills:** `find-skills`, `usage-audit`, `diagram-rules` and `batch-run` as examples.
 - **Agents:** small subagents each on the cheapest model that does the job. Haiku for mechanical checks (`search`, `audit`, `pr-shepherd`, `config-sync-checker`), Sonnet where judgement is needed (`ci-debugger`, `renovate-triage`, `shell-reviewer`, `docs-sync`, `research`) and Opus for `script-writer`. Full reference in [`docs/agents.md`](docs/agents.md). Anything tied to your own setup belongs in a machine profile.
 
 Browse [claudedirectory.org](https://www.claudedirectory.org) and the official plugin listings for more.
