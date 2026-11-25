@@ -31,6 +31,14 @@ def real_home() -> Path:
 
 
 @pytest.fixture(autouse=True)
+def not_a_cloud_session(monkeypatch):
+    """The tests may run inside a cloud session (CLAUDE_CODE_REMOTE=true), which
+    would turn every sync into `remote`. Each test starts as a machine you own."""
+    monkeypatch.delenv("CLAUDE_CODE_REMOTE", raising=False)
+    monkeypatch.delenv("CLAUDE_SYNC_REMOTE", raising=False)
+
+
+@pytest.fixture(autouse=True)
 def git_identity(monkeypatch):
     """CI runners have no git identity and the fake HOME has no ~/.gitconfig."""
     for key, value in {

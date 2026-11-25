@@ -908,3 +908,16 @@ def test_plain_doctor_and_remediate_never_call_the_claude_cli(world, fake_claude
         assert rc == 0, out
         assert "claude plugin install" in out, out
     assert fake_claude() == []
+
+
+def test_doctor_in_a_cloud_session_does_not_fetch(world):
+    """The checkout there is applied as cloned and may have no credentials, so an
+    unreachable origin must not fail `doctor` (it still fails on a machine you own)."""
+    a = world.machine("a")
+    git("-C", a.repo, "remote", "set-url", "origin", str(world.tmp / "no-such-origin.git"))
+    rc, out = world.cli(a, "doctor")
+    assert rc == 1 and "could not reach the remote" in out
+    rc, out = world.cli(a, "doctor", env={**a.env(), "CLAUDE_CODE_REMOTE": "true"})
+    assert rc == 0, out
+    assert "could not reach the remote" not in out
+    assert "not checking the upstream" in out

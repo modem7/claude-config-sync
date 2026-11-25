@@ -11,7 +11,7 @@
 ![Dependencies](https://img.shields.io/badge/dependencies-none-lightgrey)
 [![Built with Claude](https://img.shields.io/badge/built%20with-Claude-D97757?logo=claude&logoColor=white)](https://claude.com/claude-code)
 
-[Prerequisites](#prerequisites) • [Quick start](#quick-start) • [Make it work](#make-it-work) • [Commands](#commands) • [What syncs](#what-syncs) • [Per-machine tweaks](#per-machine-tweaks) • [Troubleshooting](#troubleshooting)
+[Prerequisites](#prerequisites) • [Quick start](#quick-start) • [Remote sessions](#claude-code-on-the-web-remote-sessions) • [Make it work](#make-it-work) • [Commands](#commands) • [What syncs](#what-syncs) • [Per-machine tweaks](#per-machine-tweaks) • [Troubleshooting](#troubleshooting)
 
 </div>
 
@@ -37,6 +37,7 @@ flowchart LR
 - **Pull-request based.** Each machine gets its own `sync/<hostname>` branch and PR. You merge; other machines pick it up on their next sync.
 - **Automatic.** Hooks run a sync at the start and end of every Claude Code session.
 - **Safe by default.** The first-time bootstrap deletes nothing local-only, credentials are never synced, and every failure says what went wrong and what to do.
+- **Claude Code on the web.** `claude-sync.sh remote` in the environment's setup script gives remote sessions your config. See [Remote sessions](#claude-code-on-the-web-remote-sessions).
 - **Per-machine tweaks.** Overrides for `settings.json` and profiles for agents, hooks, skills and `CLAUDE.md`, so one box can differ without forking everything.
 - **Self-diagnosing.** `doctor` finds a stuck sync and `doctor remediate` fixes what is safe to fix.
 - **No dependencies.** Python standard library only.
@@ -278,6 +279,69 @@ Run the same install steps on the next machine (same repo URL). It adopts your m
 
 </details>
 
+## Claude Code on the web (remote sessions)
+
+Claude Code on the web (and any other cloud session) starts in a fresh container with an empty `~/.claude`. Do **not** run the installer there: it would push a new `sync/<hostname>` branch for every container. Use `claude-sync.sh remote` instead. It applies the config from the sync repo the platform already checked out, and never fetches, pushes, opens a PR, or needs `gh`.
+
+### Set it up
+
+Open the **Edit environment** screen: on claude.ai/code, or in the Claude app, open the environment menu in a session's title bar, then **Edit**. The Default environment works. The fields, top to bottom:
+
+| Field | What to do for this tool |
+|---|---|
+| **Name** | Leave it. The Default environment cannot be renamed. |
+| **Network access** | Leave it on **Full**. `--plugins` and `--tools` download from GitHub and package registries; with a limited level, allow those hosts or the installs fail. |
+| **Setup script** | Paste the script below. It is a bash script that runs once when a new session starts, before Claude Code launches. **Choose file** loads a script from a file instead of pasting; pasting is easier on a phone. |
+| **Environment variables** | Optional. Only for a named cloud machine (see "Give the cloud machine its own config"). The setup script cannot read these, so it never relies on them. |
+
+Paste this into **Setup script**:
+
+```bash
+#!/bin/bash
+# Apply the synced Claude config in this fresh container. The sync repo is the
+# checkout that has a machines/ folder; if the session did not include it, do nothing.
+for d in */; do
+  [ -f "${d}claude-sync.sh" ] && [ -d "${d}machines" ] || continue
+  (cd "$d" && CLAUDE_SYNC_REMOTE=1 CLAUDE_SYNC_HOSTNAME=cloud timeout 600 ./claude-sync.sh remote --plugins --tools) \
+    || echo "claude-sync remote failed" >&2
+  break
+done
+exit 0
+```
+
+Then:
+
+1. Check the script still starts with `#!/bin/bash`, and tap **Save changes**.
+2. **Start a new session and include your sync repo in it**, next to the project you are working on. The setup script runs in the folder that holds the session's checkouts and can only see repos the session cloned; it cannot fetch a private repo itself. An environment that has a **Repositories** list (the Default one does not) can list the sync repo once so every session gets it.
+3. In the new session, check that `~/.claude/CLAUDE.md` and `~/.claude/agents/` are there (run `ls ~/.claude`, or ask Claude to).
+4. Sessions that were already running keep the old script; only new ones run the saved one. If you change the script later, save it and start another new session to try it.
+
+The script is safe to paste as it is: it finds the sync repo by its `machines/` folder, does nothing when the repo is not in the session, always exits 0 so it cannot stop a session from starting, gives the installs ten minutes (`timeout 600`) so a hung download cannot hold the session up, and applies the config before it installs anything. `CLAUDE_SYNC_REMOTE=1` is what tells `remote` it is in a cloud session; `remote` refuses to run without it on a machine you own, where it would replace your config with the `cloud` machine's.
+
+### How it fits together
+
+- `remote` runs as a machine called `cloud`, on the `basic` tier (everything except memory, which is keyed to a project path that differs per container). It writes `machines/cloud.conf` with `TIER=basic` when the repo has none, without committing it, and needs no git identity. It applies the checkout as it was cloned, normally the default branch when the session started, so a change merged in a PR shows up in the next new session.
+- It is **one-way**. Edits made inside a remote session are not captured. Change shared config on a machine you own, or in a PR on the sync repo.
+- **Opt-in installs.** `--plugins` runs `doctor install-plugins --yes` after the apply: the `claude plugin marketplace add` and `claude plugin install` commands for what `settings.json` enables and the container lacks. Each fetches third-party code from the source named, which is why it is off unless you pass it. `--tools` installs `gh` (if missing) and `ccusage`; the Python packages for the agent-memory plugin are not part of it. A failed `--plugins` step leaves the applied config in place and fails the run; `--tools` problems only print a warning.
+- **Not carried over:** credentials and MCP server logins.
+- **A cloud session is told apart from a machine you own** by Claude Code's `CLAUDE_CODE_REMOTE=true` (or `CLAUDE_SYNC_REMOTE=1`; `CLAUDE_SYNC_REMOTE=0` turns it off). There, `sync` and `pull` run as `remote`, and `push`, `bootstrap`, `override`, `profile`, `tier`, `machine` (except `machine NAME show`) and the installer are refused, so nothing is ever pushed. That makes the synced session hooks safe in a container too, and one `settings.json` work everywhere. The script names `remote` itself because that variable may not be set while it runs.
+
+### Give the cloud machine its own config
+
+The cloud machine is a machine like any other: `machines/cloud.conf` holds its tier and profile, and `machines/cloud.settings.json` is its settings override, which is also how its plugins are chosen. Edit them from any machine you own with `machine`, which goes through your usual sync PR:
+
+```bash
+claude-sync.sh machine cloud show                                   # tier, profile, overrides
+claude-sync.sh machine cloud plugin disable heavy-plugin@some-market # not on this machine
+claude-sync.sh machine cloud plugin enable  extra@some-market        # only on this machine
+claude-sync.sh machine cloud plugin inherit heavy-plugin@some-market # follow the shared setting again
+claude-sync.sh machine cloud override set .model '"haiku"'          # any other settings key
+claude-sync.sh machine cloud tier full /absolute/path               # opt in to memory (see Sync tiers)
+claude-sync.sh machine cloud profile use my-profile                 # follow machines/my-profile/
+```
+
+Each change waits for its PR to be merged. Repeating a change changes nothing, and `show` never changes anything. A name that is neither `cloud`/`cloud-...`, an existing machine nor an existing profile is refused as a likely typo. If the machine follows a profile that other machines share, `plugin` and `override` refuse and name it, because the change would reach all of them: run `machine PROFILE ...` to change the profile on purpose, or `machine NAME profile use NAME` to give the machine its own. For a separate config per environment (say one for a Rust project), give each environment its own name: put `CLAUDE_SYNC_HOSTNAME=cloud-rust` in the script line and in the environment's **Environment variables**, then run `machine cloud-rust ...`. The name in the script line is the one that counts while the script runs; the environment variable is what the session's hooks see.
+
 ## Make it work
 
 A walk-through to check everything is wired up, with the same steps on both platforms.
@@ -351,6 +415,7 @@ Everything goes through one entry point. On Linux and macOS it is `claude-sync.s
 | `sync` | **The default.** Capture local changes, bring in the default branch, apply, push and open or update this machine's PR. |
 | `push` | Capture and push this machine's changes and open or update its PR. Does not apply. |
 | `pull` | Bring in the default branch (keeping this machine's unmerged changes) and apply it. |
+| `remote [--plugins] [--tools]` | For a throwaway cloud session (see [Remote sessions](#claude-code-on-the-web-remote-sessions)): applies the checkout as it is, as machine `cloud` on the basic tier. Never fetches or pushes. `--plugins` and `--tools` opt in to installing plugins, `gh` and `ccusage`. |
 | `bootstrap` | The one-time first sync that `install` runs for you. |
 | `doctor` | Check for a stuck sync, list plugins to install, and report MCP servers. Report only; it changes nothing. |
 | `doctor remediate` | Check, and fix what is safe to fix. Never installs plugins. |
@@ -358,6 +423,7 @@ Everything goes through one entry point. On Linux and macOS it is `claude-sync.s
 | `override list` / `add PATH` / `remove PATH` | Manage settings that stay on this machine only. |
 | `profile list` / `show NAME` / `use NAME` / `copy NAME` | Manage per-machine profiles. |
 | `tier` / `tier basic` / `tier full [PROJECT_PATH]` | Show or change what this machine syncs (see [Sync tiers](#sync-tiers)). |
+| `machine NAME show` / `tier` / `profile use` / `plugin enable\|disable\|inherit` / `override set\|unset` | Show or change **another** machine's config (a cloud session, or a machine that is off) from this one, through your sync PR. See [Give the cloud machine its own config](#give-the-cloud-machine-its-own-config). |
 | `status --line [--json]` | One line when this machine needs attention, nothing when it is healthy. Local only and fast. `--json` prints it as one hook JSON object instead; the `SessionStart` hook runs that (see [How a change travels](#how-a-change-travels)). |
 
 ```bash
@@ -410,6 +476,7 @@ You rarely need these.
 | `CLAUDE_SYNC_LOCK_WAIT` | Seconds a second run waits for the first (default 10, must be 0 or more). |
 | `CLAUDE_SYNC_BACKUPS` | How many apply backup folders to keep in `~/.claude/.claude-sync-backups/` (default 10, a whole number; 0 makes none and leaves existing ones alone). |
 | `CLAUDE_SYNC_HOSTNAME` | Override the machine name used for `sync/<hostname>`. |
+| `CLAUDE_SYNC_REMOTE` | `1` treats this as a throwaway cloud session, `0` as a machine you own. Unset: Claude Code's `CLAUDE_CODE_REMOTE=true` decides. |
 | `CLAUDE_SYNC_PR_DAYS` | Days this machine's sync PR may wait before `status --line` mentions it (default 3, a whole number; 0 turns that check off). |
 
 ## What syncs

@@ -490,3 +490,22 @@ def overlay_list(repo_dir: Path, name: str) -> list[str]:
         + json.dumps(_getpath(ov, p), ensure_ascii=False, separators=(",", ":"))
         for p in leaf_paths(ov)
     ]
+
+
+def overlay_set(repo_dir: Path, name: str, path: PathT, value: Any) -> None:
+    """Record `value` at `path` in the override of `name` (a hostname or profile),
+    creating the file if needed. Unlike overlay_add it reads no local settings,
+    so it can set another machine's override from any machine."""
+    if not path:
+        raise Fail("An override needs a key path, not the whole file.", hint="Give e.g. '.model'.")
+    override = overlay_path(repo_dir, name)
+    ov = load_json(override) if override.is_file() else {}
+    try:
+        ov = _setpath(ov, path, copy.deepcopy(value))
+    except _PathError as e:
+        raise Fail(
+            f"Could not set that key in {override}: {e}.",
+            hint="A parent of that key in the override is not an object; fix it first.",
+        ) from None
+    check_override_path(override)
+    _write(override, dump_json(ov))

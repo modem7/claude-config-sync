@@ -708,3 +708,21 @@ def test_skip_python_deps_changes_nothing_on_the_basic_tier(world, tmp_path, too
     assert rc == 0, out
     assert tool_calls == ["install_gh_tools"]
     assert "python tools step skipped" not in out
+
+
+def test_install_is_refused_in_a_cloud_session(capsys):
+    rc = install.main([], {"CLAUDE_CODE_REMOTE": "true"})
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "throwaway cloud session" in err and "claude-sync.sh remote" in err
+
+
+def test_install_in_a_cloud_session_can_be_forced_past_the_refusal(fake_home, capsys):
+    """Past the refusal the next step is reading the repo URL: with none given and no
+    terminal, it fails there, in a fake home, before anything is installed."""
+    env = {**fake_home.env, "HOME": str(fake_home.root), "CLAUDE_CODE_REMOTE": "true", "CLAUDE_SYNC_REMOTE": "0"}
+    env.pop("CLAUDE_SYNC_REPO_URL", None)
+    rc = install.main([], env)
+    err = capsys.readouterr().err
+    assert rc == 1
+    assert "throwaway cloud session" not in err and "CLAUDE_SYNC_REPO_URL is not set" in err

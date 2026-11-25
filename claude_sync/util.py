@@ -6,6 +6,7 @@ import os
 import re
 import subprocess
 import sys
+from collections.abc import Mapping
 from pathlib import Path
 
 
@@ -109,6 +110,18 @@ def _stop_child(proc: subprocess.Popen) -> None:
     for pipe in (proc.stdout, proc.stderr):
         if pipe is not None:
             pipe.close()
+
+
+def is_remote(env: Mapping[str, str]) -> bool:
+    """True in a throwaway cloud session (Claude Code on the web), not on a
+    machine you own. CLAUDE_SYNC_REMOTE=1 or 0 overrides; otherwise Claude
+    Code's own CLAUDE_CODE_REMOTE=true marker decides."""
+    forced = env.get("CLAUDE_SYNC_REMOTE", "").strip().lower()
+    if forced in ("1", "true", "yes", "on"):
+        return True
+    if forced in ("0", "false", "no", "off"):
+        return False
+    return env.get("CLAUDE_CODE_REMOTE", "").strip().lower() == "true"
 
 
 def run(

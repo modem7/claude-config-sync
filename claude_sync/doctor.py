@@ -64,11 +64,15 @@ def do_doctor(
     *,
     remediate: bool = False,
     run_sync: Callable[[], bool] | None = None,
+    offline: bool = False,
 ) -> int:
     """Prints what is wrong with this clone and its live config; with
     `remediate`, also repairs what it safely can. `run_sync` runs a full
     'sync' as its own run (the bash calls claude-sync.sh sync) and says
     whether it succeeded; remediate needs it.
+
+    `offline` (a cloud session) skips the upstream check, the one step that
+    fetches: the checkout there is applied as cloned and may have no credentials.
 
     Remediation changes the clone and live config, so it holds the lock in
     `stack`, except around the nested sync, which takes the lock itself
@@ -85,7 +89,10 @@ def do_doctor(
             gitflow._git(ctx, "rebase", "--abort")
             print("  -> aborted the stuck rebase.")
 
-    _check_upstream(ctx, stack, report, remediate, run_sync)
+    if offline:
+        print("Cloud session: not checking the upstream (no fetch from here).")
+    else:
+        _check_upstream(ctx, stack, report, remediate, run_sync)
 
     project = machineconf.read_primary_project_path(ctx.repo, ctx.hostname)
     has_conf = machineconf.machine_conf_path(ctx.repo, ctx.hostname).is_file()

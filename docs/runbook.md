@@ -201,6 +201,25 @@ copy /y "%USERPROFILE%\.claude\.claude-sync-backups\<time>\agents\x.md" "%USERPR
 
 A file a profile owns (`machines/<profile>/...`) is put back by the next apply unless the edit goes into the profile: restore it, then run `sync`, which writes it back into the profile. For `settings.json`, the backup is the merged file (shared plus this machine's override); copying it back and syncing splits the override out as usual.
 
+## Use the config in Claude Code on the web
+
+Cloud sessions start from an empty container, so the environment's **Setup script** runs `claude-sync.sh remote` (apply the checkout as cloned, as machine `cloud` on the basic tier, with no fetch or push) instead of the installer. The script to paste, and a field-by-field guide to the **Edit environment** screen (Setup script, Network access, Environment variables, Save changes), are in the README, "Claude Code on the web (remote sessions)". Do not run `install.sh` there: it pushes a new `sync/<hostname>` branch per container.
+
+Choose what the cloud machine gets from any machine you own, with `claude-sync.sh machine cloud ...` (README, "Give the cloud machine its own config"). Each change is a PR; merge it, and the next new cloud session has it. Check one with `claude-sync.sh machine cloud show`.
+
+- Nothing was applied (`~/.claude` is empty): the session did not include the sync repo. The setup script only sees repos the session cloned and cannot fetch a private one, so add the sync repo to the session when you start it, or list it under the environment's **Repositories** (the Default environment has no such list).
+- "Unknown command" or the usage text: the checkout is older than the `remote` command. Merge the latest tool into the sync repo, then start a new session.
+- A plugin is missing in the session: `remote` installs plugins only with `--plugins`, and `machine cloud plugin disable` removes one on purpose (`machine cloud show` lists the overrides). If it failed, the message names the step: the `claude` CLI not on `PATH`, or the marketplace host blocked by the environment's network (set Network access to Full, or allow it). The config was applied either way.
+- The session will not start: the script exited non-zero. Keep the `exit 0` at its end, and `|| echo` after `remote`.
+- A `sync/<container name>` branch appeared in the repo: something pushed from a container, so `CLAUDE_CODE_REMOTE` was not seen (or `CLAUDE_SYNC_REMOTE=0` was set). Set `CLAUDE_SYNC_REMOTE=1` in the environment's variables, then delete the stray branch.
+- `install`, `push`, `override`, `profile`, `tier` or `machine` says "throwaway cloud session": that is the guard working. Run them on a machine you own, or set `CLAUDE_SYNC_REMOTE=0` to override.
+- `doctor` says "Cloud session: not checking the upstream": expected. It never fetches in a cloud session; run `doctor` on a machine you own to check the sync state.
+- Config merged in a PR is missing: `remote` applies the checkout as cloned and never fetches, so it appears from the next new session, not a running one.
+- `machine cloud plugin ...` says the machine follows a shared profile: the override file belongs to that profile, so a change would reach every machine on it. Run `machine PROFILE plugin ...` to do that on purpose, or `machine cloud profile use cloud` to give the cloud machine its own.
+- `machine NAME ...` says it looks like a typo: only `cloud`, `cloud-...`, an existing `machines/NAME.conf` or an existing `machines/NAME/` profile are accepted.
+- `remote` says it is for a throwaway cloud session: you ran it on a machine you own. Use `sync` or `pull` there; the setup script sets `CLAUDE_SYNC_REMOTE=1` itself.
+- `machine cloud tier full` says the conf names no project path: memory is keyed to a project folder, so give it once, `machine cloud tier full /absolute/path`.
+
 ## Choose or switch a sync tier
 
 A machine's tier is `TIER=` in `machines/<hostname>.conf` (no line means `full`). `basic` syncs `CLAUDE.md`, `settings.json`, agents, hooks and skills, with profiles and overrides as usual; `full` adds the primary project's memory folder, and the installer adds the Python packages and `ccusage`. `gh` is installed on both.

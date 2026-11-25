@@ -74,7 +74,7 @@ from pathlib import Path
 from claude_sync import cli, machineconf, profile, skilllinks, syncfiles, tools
 from claude_sync.gitflow import _git
 from claude_sync.syncfiles import _remove
-from claude_sync.util import Fail, check_real_dir, printable, redact, run
+from claude_sync.util import Fail, check_real_dir, is_remote, printable, redact, run
 
 IS_WINDOWS = os.name == "nt"
 
@@ -82,7 +82,9 @@ USAGE = (
     "Usage: install.sh [--repair|--reinstall] [--profile NAME] [--project-path PATH]"
     " [--tier basic|full] [--skip-python-deps]\n"
     "  CLAUDE_SYNC_BACKUPS=N: apply keeps the newest N backup folders of local files it"
-    " replaced, in ~/.claude/.claude-sync-backups/ (default 10; 0: none)."
+    " replaced, in ~/.claude/.claude-sync-backups/ (default 10; 0: none).\n"
+    "  In a throwaway cloud session (CLAUDE_CODE_REMOTE=true, or CLAUDE_SYNC_REMOTE=1) the installer is refused:"
+    " use 'claude-sync.sh remote' from the environment's setup script. CLAUDE_SYNC_REMOTE=0 turns that off."
 )
 _TOOL_STEPS = ("install_npm_tools", "install_gh_tools", "install_python_tools")
 
@@ -372,6 +374,12 @@ def _project_path(args: _Args, env: Mapping[str, str], home: Path, tier: str) ->
 
 def _main(argv: list[str], env: Mapping[str, str]) -> int:
     args = _parse(argv, env)
+    if is_remote(env):
+        raise Fail(
+            "install: this is a throwaway cloud session, and installing would push a sync branch from it.",
+            hint="Use 'claude-sync.sh remote' from the environment's setup script instead"
+            " (README, \"Claude Code on the web\"). To override, set CLAUDE_SYNC_REMOTE=0.",
+        )
     syncfiles.backups_from_env(env)  # refuse a bad value before any change
     url = _repo_url(env)
     home = _home(env)

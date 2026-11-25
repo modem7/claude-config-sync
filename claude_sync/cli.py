@@ -21,27 +21,34 @@ so the two agree; an in-process caller must put those in os.environ.
 from __future__ import annotations
 
 import json
+import os
 import socket
 import sys
 from collections.abc import Mapping
 from contextlib import ExitStack
 from pathlib import Path
 
-from claude_sync import doctor, gitflow, pr, profile, status, syncfiles
+from claude_sync import doctor, gitflow, machinecmd, machineconf, pr, profile, status, syncfiles, tools
 from claude_sync.gitflow import SyncCtx
 from claude_sync.lock import lock_wait_from_env
-from claude_sync.util import Fail, UsageError, redact, run
+from claude_sync.util import Fail, UsageError, is_remote, redact, run
 
 # bash usage(), except that its two flock lines became one: there is no
 # CLAUDE_SYNC_FLOCK and no weaker fallback lock any more.
 USAGE = """\
-Usage: claude-sync.sh [push|pull|sync|bootstrap|doctor [remediate|install-plugins [--yes]]
+Usage: claude-sync.sh [push|pull|remote [--plugins] [--tools]|sync|bootstrap|doctor [remediate|install-plugins [--yes]]
                        |override add|remove|list [JQ_PATH]
                        |profile list|show NAME|copy FROM [--force] [--yes]|use NAME
-                       |tier [show|basic|full [PROJECT_PATH]]|status --line [--json]]
+                       |tier [show|basic|full [PROJECT_PATH]]|machine NAME ...|status --line [--json]]
   sync       capture local changes onto sync/<hostname>, merge the default branch in, apply, push, open/update its PR
   push       capture onto sync/<hostname>, push it and open/update its PR (no apply)
   pull       bring in the default branch (keeping this machine's unmerged changes) and apply
+  remote     for a throwaway cloud session: apply the checkout as it is (no fetch, no push) as machine
+             'cloud' (CLAUDE_SYNC_HOSTNAME to rename), basic tier, creating machines/<hostname>.conf if missing
+             --plugins then runs 'doctor install-plugins --yes'; --tools installs gh and ccusage. Both opt-in.
+             remote needs a cloud session (CLAUDE_CODE_REMOTE=true, or CLAUDE_SYNC_REMOTE=1) and is refused on a machine you own.
+             There sync and pull run as remote, and push, bootstrap, override, profile, tier, machine (except 'machine NAME show')
+             and the installer are refused. CLAUDE_SYNC_REMOTE=0 turns this off.
   Nothing is ever pushed to the default branch; changes reach other machines when the PR is merged.
   The PR step needs gh, logged in. CLAUDE_SYNC_GH=<path> picks the gh binary;
   CLAUDE_SYNC_GH_REPO=owner/repo sets the repo when origin's URL doesn't show it.
@@ -53,6 +60,12 @@ Usage: claude-sync.sh [push|pull|sync|bootstrap|doctor [remediate|install-plugin
        claude-sync.sh tier basic               # stop syncing memory here (TIER= in machines/<hostname>.conf)
   tier: basic syncs CLAUDE.md, settings.json, agents, hooks and skills; full (the default) adds memory.
   'tier full' needs the primary project path once (PROJECT_PATH) if the conf has none.
+  machine NAME show                       show another machine's tier, profile and settings overrides
+  machine NAME tier basic|full [PATH]     set its tier        machine NAME profile use PROFILE
+  machine NAME plugin enable|disable|inherit PLUGIN@MARKET     choose its plugins (inherit: follow shared)
+  machine NAME override set JQ_PATH JSON | unset JQ_PATH       any other settings key, for that machine only
+             Edits the repo only, through this machine's sync branch and PR. NAME can be a machine that is off,
+             or 'cloud' (what 'remote' runs as; an environment can set CLAUDE_SYNC_HOSTNAME to be another).
   status --line  one line when this machine needs attention (last hook sync failed, a doctor
              problem, its PR waiting over CLAUDE_SYNC_PR_DAYS days (default 3; 0: off), a tier change),
              else nothing. Local only (no fetch, no gh, no lock); always exits 0. The SessionStart hook runs it.
@@ -63,7 +76,7 @@ Usage: claude-sync.sh [push|pull|sync|bootstrap|doctor [remediate|install-plugin
 """
 
 # Commands that capture, commit or push: only on the default branch.
-_BRANCH_BOUND = ("push", "sync", "bootstrap", "override", "profile", "tier")
+_BRANCH_BOUND = ("push", "sync", "bootstrap", "override", "profile", "tier", "machine")
 _SIGNAL_EXITS = {129: "SIGHUP", 130: "Ctrl-C", 143: "SIGTERM"}
 
 
@@ -163,6 +176,9 @@ def _skip_message(repo: Path) -> str:
 
 
 def _main(argv: list[str], env: Mapping[str, str]) -> int:
+    if is_remote(env) and not env.get("CLAUDE_SYNC_HOSTNAME"):
+        # A container's hostname is random: every command there is the one machine "cloud".
+        env = {**env, "CLAUDE_SYNC_HOSTNAME": REMOTE_HOSTNAME}
     if argv and argv[0] == "status":
         return _status(argv[1:], env)
     repo = repo_dir(env)
@@ -170,6 +186,23 @@ def _main(argv: list[str], env: Mapping[str, str]) -> int:
     if not (repo / ".git").exists():
         raise Fail(f"No git repo at {repo}. Run install.sh first.")
     cmd, args = (argv[0], argv[1:]) if argv else ("sync", [])
+    offline = False  # `remote`: apply the checkout as cloned, never fetch
+    if is_remote(env) and cmd in ("sync", "pull"):
+        cmd, args = "remote", []  # a cloud session never captures or pushes
+    extras: list[str] = []  # `remote --plugins --tools`: opt-in installs after the apply
+    if cmd == "remote":
+        if any(a not in ("--plugins", "--tools") for a in args):
+            raise UsageError()
+        if not is_remote(env):
+            raise Fail(
+                "'remote' is for a throwaway cloud session, and this looks like a machine you own:"
+                " it would replace this machine's config with the 'cloud' machine's.",
+                hint="Use 'sync' or 'pull' here. In a cloud setup script, set CLAUDE_SYNC_REMOTE=1"
+                " on the command (the README script does).",
+            )
+        extras, args = args, []
+        cmd, offline = "pull", True
+        env = _remote_env(repo, env)
     sub = args[0] if args else ""
 
     # The capture and PR flow only runs with the clone on its default
@@ -179,6 +212,12 @@ def _main(argv: list[str], env: Mapping[str, str]) -> int:
     read_only = (cmd == "profile" and (sub or "list") in ("list", "show")) or (
         cmd == "tier" and (sub or "show") == "show"
     )
+    read_only = read_only or (cmd == "machine" and machinecmd.read_only(args))
+    if is_remote(env) and cmd in _BRANCH_BOUND and not read_only:
+        raise Fail(
+            f"'{cmd}' would push a branch from a throwaway cloud session, so it is refused.",
+            hint="Run it on a machine you own. To override (testing only), set CLAUDE_SYNC_REMOTE=0.",
+        )
     if cmd in _BRANCH_BOUND and not read_only and not gitflow.on_default_branch(repo):
         print(_skip_message(repo), file=sys.stderr)
         return 0
@@ -191,12 +230,19 @@ def _main(argv: list[str], env: Mapping[str, str]) -> int:
             gitflow.do_squash(ctx)
             pr.do_push(ctx)
         elif cmd == "pull":
-            if gitflow.on_default_branch(repo) and gitflow.has_origin(repo):
+            if offline:
+                pass  # `remote`: no fetch and no rebase, whatever the branch or upstream
+            elif gitflow.on_default_branch(repo) and gitflow.has_origin(repo):
                 gitflow.begin_sync(ctx, stack)
                 gitflow.do_integrate(ctx)
             else:
                 gitflow.integrate_current_branch(ctx)
             gitflow.do_apply(ctx)
+            if "--tools" in extras:  # gh and ccusage; the pip packages only serve agent-memory
+                tools.install_gh_tools()
+                tools.install_npm_tools()
+            if "--plugins" in extras:  # the config is already applied if this fails
+                return doctor.install_plugins(ctx, ["--yes"])
         elif cmd == "sync":
             gitflow.begin_sync(ctx, stack)
             gitflow.do_capture_and_commit(ctx)
@@ -214,15 +260,53 @@ def _main(argv: list[str], env: Mapping[str, str]) -> int:
             _profile(ctx, stack, args)
         elif cmd == "tier":
             _tier(ctx, stack, args)
+        elif cmd == "machine":
+            machinecmd.machine(ctx, stack, args)
         elif cmd == "doctor" and sub == "install-plugins":
             return doctor.install_plugins(ctx, args[1:])
         elif cmd == "doctor":
             return doctor.do_doctor(
-                ctx, stack, remediate=sub == "remediate", run_sync=lambda: _nested_sync(env)
+                ctx,
+                stack,
+                remediate=sub == "remediate",
+                run_sync=lambda: _nested_sync(env),
+                offline=is_remote(env),
             )
         else:
             raise UsageError()
     return 0
+
+
+REMOTE_HOSTNAME = "cloud"
+
+
+def _remote_env(repo: Path, env: Mapping[str, str]) -> Mapping[str, str]:
+    """`remote`: a throwaway cloud container has a random hostname and no
+    machines/<hostname>.conf, so every one is the same machine ("cloud") on
+    the basic tier. The conf is written only when missing and is not
+    committed: `remote` is a pull and never captures or pushes."""
+    env = {**env, "CLAUDE_SYNC_HOSTNAME": env.get("CLAUDE_SYNC_HOSTNAME") or REMOTE_HOSTNAME}
+    host = env["CLAUDE_SYNC_HOSTNAME"]
+    if profile.profile_valid_name(host):  # make_ctx reports an invalid one
+        conf = machineconf.machine_conf_path(repo, host)
+        if not os.path.lexists(conf):  # a link, even a dangling one, is never written through
+            conf.parent.mkdir(parents=True, exist_ok=True)
+            conf.write_bytes(b"TIER=basic\n")
+            _exclude_locally(repo, f"machines/{host}.conf")
+    return env
+
+
+def _exclude_locally(repo: Path, rel: str) -> None:
+    """Keep a file `remote` wrote out of this clone's `git add -A`, so it is
+    never committed by a later sync or lands in a developer's PR. Best effort."""
+    try:
+        exclude = repo / ".git" / "info" / "exclude"
+        if exclude.parent.is_dir():
+            text = exclude.read_text() if exclude.exists() else ""
+            if f"/{rel}" not in text.splitlines():
+                exclude.write_text(text + ("" if not text or text.endswith("\n") else "\n") + f"/{rel}\n")
+    except OSError:
+        pass
 
 
 def _status(args: list[str], env: Mapping[str, str]) -> int:

@@ -1,5 +1,7 @@
 # Claude Code config sync — design
 
+> **Note (2026-11-25), cloud sessions:** a throwaway Claude Code on the web container is its own machine, `cloud`, and is not installed or synced like the machines described here. `claude-sync.sh remote` applies the checkout without fetching or pushing, `CLAUDE_CODE_REMOTE=true` makes `sync` and `pull` do the same and refuses every command that pushes, and `claude-sync.sh machine NAME ...` edits another machine's config through the PR. See the README, "Claude Code on the web", and `docs/risks.md` row 49.
+
 > **Note (2026-11-14):** memory is now synced on the `full` sync tier only (the default). A machine with `TIER=basic` in its `.conf` syncs no memory and installs no pip or npm tools. See `docs/runbook.md`, "Choose or switch a sync tier", and `docs/risks.md` rows 37 to 39.
 
 > **Note (2026-11-14), apply backups:** the mirror apply described here no longer discards a differing live file without a copy. Before `sync_apply` (and the profile unapply before it) overwrites or deletes a live file whose bytes differ from what the apply ends up with, the file is copied to `~/.claude/.claude-sync-backups/<UTC time>/`. The newest `CLAUDE_SYNC_BACKUPS` (default 10, 0 off) are kept; the folder is never captured. See `docs/runbook.md`, "Restore a file from an apply backup", and `docs/risks.md` row 45.

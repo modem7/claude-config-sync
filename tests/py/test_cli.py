@@ -22,13 +22,19 @@ from claude_sync.lock import SyncLock
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 USAGE = """\
-Usage: claude-sync.sh [push|pull|sync|bootstrap|doctor [remediate|install-plugins [--yes]]
+Usage: claude-sync.sh [push|pull|remote [--plugins] [--tools]|sync|bootstrap|doctor [remediate|install-plugins [--yes]]
                        |override add|remove|list [JQ_PATH]
                        |profile list|show NAME|copy FROM [--force] [--yes]|use NAME
-                       |tier [show|basic|full [PROJECT_PATH]]|status --line [--json]]
+                       |tier [show|basic|full [PROJECT_PATH]]|machine NAME ...|status --line [--json]]
   sync       capture local changes onto sync/<hostname>, merge the default branch in, apply, push, open/update its PR
   push       capture onto sync/<hostname>, push it and open/update its PR (no apply)
   pull       bring in the default branch (keeping this machine's unmerged changes) and apply
+  remote     for a throwaway cloud session: apply the checkout as it is (no fetch, no push) as machine
+             'cloud' (CLAUDE_SYNC_HOSTNAME to rename), basic tier, creating machines/<hostname>.conf if missing
+             --plugins then runs 'doctor install-plugins --yes'; --tools installs gh and ccusage. Both opt-in.
+             remote needs a cloud session (CLAUDE_CODE_REMOTE=true, or CLAUDE_SYNC_REMOTE=1) and is refused on a machine you own.
+             There sync and pull run as remote, and push, bootstrap, override, profile, tier, machine (except 'machine NAME show')
+             and the installer are refused. CLAUDE_SYNC_REMOTE=0 turns this off.
   Nothing is ever pushed to the default branch; changes reach other machines when the PR is merged.
   The PR step needs gh, logged in. CLAUDE_SYNC_GH=<path> picks the gh binary;
   CLAUDE_SYNC_GH_REPO=owner/repo sets the repo when origin's URL doesn't show it.
@@ -40,6 +46,12 @@ Usage: claude-sync.sh [push|pull|sync|bootstrap|doctor [remediate|install-plugin
        claude-sync.sh tier basic               # stop syncing memory here (TIER= in machines/<hostname>.conf)
   tier: basic syncs CLAUDE.md, settings.json, agents, hooks and skills; full (the default) adds memory.
   'tier full' needs the primary project path once (PROJECT_PATH) if the conf has none.
+  machine NAME show                       show another machine's tier, profile and settings overrides
+  machine NAME tier basic|full [PATH]     set its tier        machine NAME profile use PROFILE
+  machine NAME plugin enable|disable|inherit PLUGIN@MARKET     choose its plugins (inherit: follow shared)
+  machine NAME override set JQ_PATH JSON | unset JQ_PATH       any other settings key, for that machine only
+             Edits the repo only, through this machine's sync branch and PR. NAME can be a machine that is off,
+             or 'cloud' (what 'remote' runs as; an environment can set CLAUDE_SYNC_HOSTNAME to be another).
   status --line  one line when this machine needs attention (last hook sync failed, a doctor
              problem, its PR waiting over CLAUDE_SYNC_PR_DAYS days (default 3; 0: off), a tier change),
              else nothing. Local only (no fetch, no gh, no lock); always exits 0. The SessionStart hook runs it.
@@ -168,6 +180,162 @@ def test_pull_on_a_fresh_machine_applies_what_another_pushed(world):
     rc, out = world.cli(b, "pull")
     assert rc == 0, out
     assert (b.claude / "CLAUDE.md").read_bytes() == b"# from machine A\n"
+
+
+def _remote_world(world):
+    """A fresh container: a clone with no conf for its hostname, as the platform checked it out."""
+    a = world.machine("a")
+    (a.repo / "dot-claude" / "CLAUDE.md").write_bytes(b"# shared by the remote test\n")
+    git("-C", a.repo, "commit", "-q", "-am", "shared edit")
+    git("-C", a.repo, "push", "-q", "origin", "HEAD")
+    return world.machine("c", pull=False)
+
+
+def test_remote_applies_without_a_conf_and_creates_the_cloud_basic_conf(world):
+    c = _remote_world(world)
+    env = {k: v for k, v in c.env().items() if k != "CLAUDE_SYNC_HOSTNAME"}
+    env["CLAUDE_SYNC_REMOTE"] = "1"
+    rc, out = world.cli(c, "remote", env=env)
+    assert rc == 0, out
+    assert (c.claude / "CLAUDE.md").read_bytes() == b"# shared by the remote test\n"
+    assert (c.repo / "machines" / "cloud.conf").read_bytes() == b"TIER=basic\n"
+    # kept out of the clone's `git add -A`, so no later sync or PR can pick it up
+    assert git("-C", c.repo, "status", "--porcelain", "machines").stdout.strip() == ""
+    assert git("-C", c.repo, "check-ignore", "machines/cloud.conf", check=False).returncode == 0
+
+
+def test_remote_on_the_default_branch_applies_without_reaching_origin(world):
+    c = _remote_world(world)
+    git("-C", c.repo, "remote", "set-url", "origin", str(c.repo / "no-such-remote.git"))
+    rc, out = world.cli(c, "remote", env={**c.env(), "CLAUDE_SYNC_REMOTE": "1", "CLAUDE_SYNC_HOSTNAME": "cloud"})
+    assert rc == 0, out
+    assert (c.claude / "CLAUDE.md").read_bytes() == b"# shared by the remote test\n"
+
+
+@pytest.mark.parametrize("cmd", ["sync", "pull"])
+def test_in_a_cloud_session_sync_and_pull_become_remote(world, cmd):
+    c = _remote_world(world)
+    env = {k: v for k, v in c.env().items() if k != "CLAUDE_SYNC_HOSTNAME"}
+    env["CLAUDE_CODE_REMOTE"] = "true"
+    git("-C", c.repo, "remote", "set-url", "origin", str(c.repo / "no-such-remote.git"))
+    rc, out = world.cli(c, cmd, env=env)
+    assert rc == 0, out
+    assert (c.claude / "CLAUDE.md").read_bytes() == b"# shared by the remote test\n"
+    assert (c.repo / "machines" / "cloud.conf").read_bytes() == b"TIER=basic\n"
+    assert not has_ref(c.repo, "refs/heads/sync/cloud")
+
+
+@pytest.mark.parametrize("cmd", ["push", "bootstrap"])
+def test_in_a_cloud_session_push_and_bootstrap_are_refused(world, cmd):
+    c = _remote_world(world)
+    rc, out = world.cli(c, cmd, env={**c.env(), "CLAUDE_CODE_REMOTE": "true"})
+    assert rc == 1
+    assert "throwaway cloud session" in out and "CLAUDE_SYNC_REMOTE=0" in out
+    assert not has_ref(world.origin, "refs/heads/sync/host-c")
+
+
+def test_claude_sync_remote_0_makes_a_cloud_session_behave_like_a_machine(world):
+    a = world.machine("a")
+    (a.claude / "CLAUDE.md").write_bytes(b"# edited on a machine\n")
+    rc, out = world.cli(a, "push", env={**a.env(), "CLAUDE_CODE_REMOTE": "true", "CLAUDE_SYNC_REMOTE": "0"})
+    assert rc == 0, out
+    assert has_ref(world.origin, "refs/heads/sync/host-a")
+
+
+def test_claude_sync_remote_1_forces_remote_without_the_marker(world):
+    c = _remote_world(world)
+    rc, out = world.cli(c, "push", env={**c.env(), "CLAUDE_SYNC_REMOTE": "1"})
+    assert rc == 1 and "throwaway cloud session" in out
+
+
+def test_remote_installs_nothing_without_its_flags(world, monkeypatch):
+    c = _remote_world(world)
+    calls = []
+    monkeypatch.setattr(cli.tools, "install_gh_tools", lambda *a, **k: calls.append("gh"))
+    monkeypatch.setattr(cli.tools, "install_npm_tools", lambda *a, **k: calls.append("npm"))
+    monkeypatch.setattr(cli.doctor, "install_plugins", lambda *a, **k: calls.append("plugins") or 0)
+    rc, out = world.cli(c, "remote", env={**c.env(), "CLAUDE_SYNC_REMOTE": "1", "CLAUDE_SYNC_HOSTNAME": "cloud"})
+    assert rc == 0, out
+    assert calls == []
+
+
+def test_remote_flags_install_after_the_apply_and_plugins_run_with_yes(world, monkeypatch):
+    c = _remote_world(world)
+    calls = []
+    monkeypatch.setattr(cli.tools, "install_gh_tools", lambda *a, **k: calls.append("gh"))
+    monkeypatch.setattr(cli.tools, "install_npm_tools", lambda *a, **k: calls.append("npm"))
+
+    def plugins(ctx, args, **k):
+        calls.append(("plugins", args, (c.claude / "CLAUDE.md").is_file()))
+        return 0
+
+    monkeypatch.setattr(cli.doctor, "install_plugins", plugins)
+    rc, out = world.cli(c, "remote", "--tools", "--plugins", env={**c.env(), "CLAUDE_SYNC_REMOTE": "1", "CLAUDE_SYNC_HOSTNAME": "cloud"})
+    assert rc == 0, out
+    assert calls == ["gh", "npm", ("plugins", ["--yes"], True)]
+
+
+def test_a_failed_plugin_install_keeps_the_applied_config_and_fails_the_run(world, monkeypatch):
+    from claude_sync.util import Fail
+
+    c = _remote_world(world)
+
+    def boom(*a, **k):
+        raise Fail("the claude CLI is not on PATH, so nothing was installed.")
+
+    monkeypatch.setattr(cli.doctor, "install_plugins", boom)
+    rc, out = world.cli(c, "remote", "--plugins", env={**c.env(), "CLAUDE_SYNC_REMOTE": "1", "CLAUDE_SYNC_HOSTNAME": "cloud"})
+    assert rc == 1 and "not on PATH" in out
+    assert (c.claude / "CLAUDE.md").read_bytes() == b"# shared by the remote test\n"
+
+
+def test_remote_is_refused_on_a_machine_you_own(world):
+    c = _remote_world(world)
+    rc, out = world.cli(c, "remote")
+    assert rc == 1 and "machine you own" in out and "CLAUDE_SYNC_REMOTE=1" in out
+    assert not (c.claude / "CLAUDE.md").exists()
+    assert not (c.repo / "machines" / "cloud.conf").exists()
+
+
+def test_remote_never_writes_through_a_link_in_place_of_the_conf(world, tmp_path):
+    c = _remote_world(world)
+    target = tmp_path / "elsewhere.conf"
+    (c.repo / "machines").mkdir(exist_ok=True)
+    (c.repo / "machines" / "cloud.conf").symlink_to(target)
+    world.cli(c, "remote", env={**c.env(), "CLAUDE_SYNC_REMOTE": "1", "CLAUDE_SYNC_HOSTNAME": "cloud"})
+    assert not target.exists()
+
+
+def test_every_command_in_a_cloud_session_is_the_cloud_machine(world):
+    c = _remote_world(world)
+    env = {k: v for k, v in c.env().items() if k != "CLAUDE_SYNC_HOSTNAME"}
+    env["CLAUDE_CODE_REMOTE"] = "true"
+    rc, out = world.cli(c, "tier", env=env)
+    assert rc == 1 and "machines/cloud.conf" in out
+
+
+def test_remote_never_pushes_a_branch(world):
+    c = _remote_world(world)
+    rc, out = world.cli(c, "remote", env={**c.env(), "CLAUDE_SYNC_REMOTE": "1", "CLAUDE_SYNC_HOSTNAME": "cloud"})
+    assert rc == 0, out
+    assert not has_ref(world.origin, "refs/heads/sync/cloud")
+
+
+def test_remote_keeps_an_existing_conf_and_a_chosen_hostname(world):
+    c = _remote_world(world)
+    conf = c.repo / "machines" / "box-1.conf"
+    conf.write_bytes(b"TIER=basic\n# mine\n")
+    rc, out = world.cli(c, "remote", env={**c.env(), "CLAUDE_SYNC_REMOTE": "1", "CLAUDE_SYNC_HOSTNAME": "box-1"})
+    assert rc == 0, out
+    assert conf.read_bytes() == b"TIER=basic\n# mine\n"
+    assert not (c.repo / "machines" / "cloud.conf").exists()
+
+
+def test_remote_takes_only_its_two_flags(world):
+    c = _remote_world(world)
+    rc, out = world.cli(c, "remote", "extra")
+    assert rc == 1
+    assert "Usage: claude-sync.sh" in out
 
 
 def test_push_refuses_to_run_without_a_machine_conf(world):
