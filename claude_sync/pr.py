@@ -6,8 +6,11 @@ default branch is never touched, and a PR is never merged or set to
 auto-merge: a human merges.
 
 `CLAUDE_SYNC_GH` picks the gh binary, `CLAUDE_SYNC_GH_REPO` (owner/repo)
-sets the repo when origin's URL does not show it. Nothing gh or git prints
-is shown without `redact` first, so a token never reaches the terminal.
+sets the repo the PR is opened in when origin's URL does not show it. The
+push guard never takes the repo from it: it checks the repo origin's push
+URL names, and refuses when CLAUDE_SYNC_GH_REPO names another. Nothing gh
+or git prints is shown without `redact` first, so a token never reaches
+the terminal.
 """
 
 from __future__ import annotations
@@ -56,18 +59,11 @@ def _gh(*args: str):
     return run([gh_bin(), *args], env=_GH_ENV)
 
 
-def gh_repo_slug(repo: Path) -> str | None:
-    """owner/repo for gh, from CLAUDE_SYNC_GH_REPO or origin's URL
-    (git@host:owner/repo.git, ssh://git@host/owner/repo.git,
-    https://host/owner/repo). A host other than github.com is prefixed.
-    None when it cannot be worked out."""
-    forced = os.environ.get("CLAUDE_SYNC_GH_REPO", "")
-    if forced:
-        return forced
-    result = _git(repo, "remote", "get-url", "origin")
-    if result.returncode != 0:
-        return None
-    url = result.stdout.strip()
+def _slug_from_url(url: str) -> str | None:
+    """owner/repo from a remote URL (git@host:owner/repo.git,
+    ssh://git@host/owner/repo.git, https://host/owner/repo). A host other
+    than github.com is prefixed; ssh.github.com (SSH over port 443) is
+    github.com. None when the URL names no owner/repo (a local path)."""
     if "://" in url:
         rest = url.split("://", 1)[1]
         host, _, path = rest.partition("/")
@@ -82,7 +78,53 @@ def gh_repo_slug(repo: Path) -> str | None:
     path = path.removesuffix(".git")
     if not re.fullmatch(r"[^/]+/[^/]+", path):
         return None
-    return path if host == "github.com" else f"{host}/{path}"
+    host = host.lower()
+    return path if host in ("github.com", "ssh.github.com") else f"{host}/{path}"
+
+
+def gh_repo_slug(repo: Path) -> str | None:
+    """owner/repo for gh's PR calls, from CLAUDE_SYNC_GH_REPO or origin's
+    (fetch) URL. None when it cannot be worked out. Not for the push guard:
+    see push_repo_slug."""
+    forced = os.environ.get("CLAUDE_SYNC_GH_REPO", "")
+    if forced:
+        return forced
+    result = _git(repo, "remote", "get-url", "origin")
+    if result.returncode != 0:
+        return None
+    return _slug_from_url(result.stdout.strip())
+
+
+def push_repo_slug(repo: Path) -> tuple[str | None, str]:
+    """(slug, reason) for the repo a push to origin really goes to: from
+    every URL `git remote get-url --push --all origin` gives (pushurl and
+    pushInsteadOf applied), never from CLAUDE_SYNC_GH_REPO. The slug is None,
+    with the reason, when there is no push URL, when one names no
+    owner/repo, or when they name more than one repo."""
+    result = _git(repo, "remote", "get-url", "--push", "--all", "origin")
+    urls = [u.strip() for u in result.stdout.splitlines() if u.strip()] if result.returncode == 0 else []
+    if not urls:
+        return None, "origin has no push URL"
+    slugs = []
+    for url in urls:
+        slug = _slug_from_url(url)
+        if slug is None or not _split_slug(slug):
+            return None, f"could not work out owner/repo from origin's push URL {redact(url)}"
+        slugs.append(slug)
+    if len({s.lower() for s in slugs}) > 1:
+        return None, f"origin pushes to more than one repo ({', '.join(slugs)})"
+    return slugs[0], ""
+
+
+def _same_repo(a: str, b: str) -> bool:
+    """Whether two slugs name one repo: GitHub names ignore case, and
+    github.com/owner/repo is owner/repo."""
+
+    def norm(slug: str) -> str:
+        slug = slug.strip().strip("/").lower()
+        return slug.removeprefix("github.com/")
+
+    return norm(a) == norm(b)
 
 
 def gh_sync_pr_state(slug: str | None, branch: str, tip: str) -> str:
@@ -121,6 +163,67 @@ def bind_pr_state(ctx: SyncCtx) -> None:
     ctx.pr_state = pr_state_for(ctx.repo)
 
 
+def _split_slug(slug: str) -> tuple[str, str] | None:
+    """(hostname or "", owner/repo) from gh_repo_slug's answer, None if odd."""
+    parts = slug.split("/")
+    if any(not p for p in parts):
+        return None
+    if len(parts) == 2:
+        return "", slug
+    if len(parts) == 3:
+        return parts[0], f"{parts[1]}/{parts[2]}"
+    return None
+
+
+def origin_visibility_problem(ctx: SyncCtx) -> str | None:
+    """None when GitHub says the repo origin's push URL names is private and
+    not a template, else why it is refused. Fails closed: when it cannot be
+    checked (no slug, CLAUDE_SYNC_GH_REPO naming another repo, gh missing or
+    logged out, the API failing or answering oddly) the reason starts "could
+    not verify origin is private". Every gh call names the host with
+    --hostname, so GH_HOST cannot send it elsewhere. gh's own error,
+    redacted, goes to stderr. Guards the sync push only (publish.py is
+    separate)."""
+    unverified = "could not verify origin is private"
+    slug, why = push_repo_slug(ctx.repo)
+    split = _split_slug(slug) if slug else None
+    if not slug or not split:
+        return f"{unverified}: {why or 'could not work out owner/repo from origin push URL'}"
+    forced = os.environ.get("CLAUDE_SYNC_GH_REPO", "")
+    if forced and not _same_repo(forced, slug):
+        return (
+            f"{unverified}: CLAUDE_SYNC_GH_REPO is {forced}, but origin pushes to {slug};"
+            " unset it or make it match"
+        )
+    host, name = split
+    host = host or "github.com"
+    if not gh_installed():
+        return f"{unverified} ({slug}): the GitHub CLI (gh) is not installed"
+    auth = _gh("auth", "status", "--hostname", host)
+    if auth.returncode != 0:
+        _show((auth.stdout + auth.stderr).rstrip("\n"))
+        if host != "github.com":
+            return (
+                f"{unverified} ({slug}): gh is not logged in to {host}, an unknown host (an SSH alias?"
+                " If so, use git@github.com:OWNER/REPO.git as origin's push URL)"
+            )
+        return f"{unverified} ({slug}): gh is not logged in"
+    jq = '[.private, .is_template, .visibility] | map(tostring) | join(" ")'
+    result = _gh("api", "--hostname", host, f"repos/{name}", "--jq", jq)
+    if result.returncode != 0:
+        _show(result.stderr)
+        return f"{unverified} ({slug}): 'gh api repos/{name}' failed (see the gh error above)"
+    fields = result.stdout.split()
+    if len(fields) != 3 or fields[0] not in ("true", "false") or fields[1] not in ("true", "false"):
+        return f"{unverified} ({slug}): gh gave an answer that could not be read"
+    private, template, visibility = fields
+    if private != "true" or visibility == "public":
+        return f"origin ({slug}) is a public repo"
+    if template == "true":
+        return f"origin ({slug}) is a GitHub template repo"
+    return None
+
+
 def _config_get(ctx: SyncCtx, key: str) -> str:
     result = _git(ctx, "config", "--get", key)
     return result.stdout.strip() if result.returncode == 0 else ""
@@ -151,7 +254,9 @@ def ensure_pr(ctx: SyncCtx) -> None:
     """Opens a PR for the sync branch unless one is open. Never enables
     auto-merge. Needs ctx.default (set by begin_sync). Raises Fail, with the
     command to run by hand, when gh is missing, not logged in or failing;
-    the branch is already pushed then."""
+    the branch is already pushed then. do_push only pushes after gh answered,
+    so the gh-missing and logged-out cases here mean gh changed in between,
+    or the branch was pushed by an earlier run."""
     sb = sync_branch(ctx.hostname)
     tip = _out(ctx, "rev-parse", f"refs/heads/{sb}")
     if tip == _config_get(ctx, "claude-sync.prVerified"):
@@ -165,7 +270,7 @@ def ensure_pr(ctx: SyncCtx) -> None:
         raise _pr_fail(
             ctx, tip,
             f"pushed {sb}, but could not work out owner/repo from origin's URL, so no PR was opened.",
-            "  Set CLAUDE_SYNC_GH_REPO=owner/repo, or open it by hand:", f"  {manual}",
+            "  Set CLAUDE_SYNC_GH_REPO=owner/repo (the repo origin pushes to), or open it by hand:", f"  {manual}",
         )  # fmt: skip
     manual = manual.replace("<owner/repo>", slug, 1)
     if not gh_installed():
@@ -241,6 +346,16 @@ def do_push(ctx: SyncCtx) -> None:
     remote = _git(ctx, "rev-parse", "-q", "--verify", f"refs/remotes/origin/{sb}")
     remote_tip = remote.stdout.strip() if remote.returncode == 0 else ""
     if tip != remote_tip:
+        problem = origin_visibility_problem(ctx)
+        if problem:
+            raise Fail(
+                f"refusing to push {sb}: {problem}. Nothing was pushed.",
+                hint=_hint(
+                    "  claude-sync only pushes to a PRIVATE repo that is not a template, as your config can hold private notes and memory.",
+                    f"  Point origin at one: git -C {ctx.repo} remote set-url origin <url>, then re-run 'claude-sync.sh sync'.",
+                    "  If gh could not check it, install gh, run 'gh auth login' and re-run.",
+                ),
+            )
         last = _config_get(ctx, "claude-sync.lastPushed")
         if (
             remote_tip

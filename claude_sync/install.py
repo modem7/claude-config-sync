@@ -307,13 +307,13 @@ def _run_tools(tier: str = machineconf.DEFAULT_TIER, skip_python_deps: bool = Fa
 
 
 def _gh_notes(env: Mapping[str, str], host: str) -> None:
-    """Only a hint: without gh, syncs still push the branch, then fail loudly."""
+    """Only a hint: without gh, syncs refuse to push (they cannot check origin is private)."""
     gh = env.get("CLAUDE_SYNC_GH") or "gh"
     has_sep = os.sep in gh or (os.altsep and os.altsep in gh)
     if not (Path(gh).is_file() if has_sep else shutil.which(gh)):
         print(
             "Note: the GitHub CLI (gh) is not installed. claude-sync.sh needs it to open its sync PRs;\n"
-            f"  without it every sync pushes sync/{host} and then fails. Install gh, then run 'gh auth login'.",
+            f"  without it every sync refuses to push sync/{host}. Install gh, then run 'gh auth login'.",
             file=sys.stderr,
         )
     elif run([gh, "auth", "status"], env={"GH_PROMPT_DISABLED": "1"}).returncode != 0:

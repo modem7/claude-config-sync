@@ -170,3 +170,53 @@ def test_write_machine_mcp_sync_keeps_other_lines_and_off_removes_the_line(tmp_p
     machineconf.write_machine_mcp_sync(tmp_path, "host-a", False)
     assert conf.read_bytes() == original + b"\n"
     assert machineconf.read_machine_mcp_sync(tmp_path, "host-a") is False
+
+
+# ── PLUGINS= ─────────────────────────────────────────────────────────────
+
+
+def test_plugins_is_off_without_a_conf_a_line_a_value_or_with_off(tmp_path):
+    assert machineconf.read_machine_plugins(tmp_path, "host-a") is False
+    write_machine_conf(tmp_path, "host-a", "/p")
+    assert machineconf.read_machine_plugins(tmp_path, "host-a") is False
+    conf = machine_conf_path(tmp_path, "host-a")
+    for line in (b"PLUGINS=\n", b"PLUGINS=off\n", b"PLUGINS=  \n", b"PLUGINS=off\r\n"):
+        conf.write_bytes(b"PRIMARY_PROJECT_PATH=/p\n" + line)
+        assert machineconf.read_machine_plugins(tmp_path, "host-a") is False, line
+
+
+def test_plugins_is_on_only_for_full(tmp_path):
+    conf = machine_conf_path(tmp_path, "host-a")
+    conf.parent.mkdir(parents=True)
+    for line in (b"PLUGINS=full\n", b"PLUGINS= full \n", b"PLUGINS=full\r\n"):
+        conf.write_bytes(b"PRIMARY_PROJECT_PATH=/p\n" + line)
+        assert machineconf.read_machine_plugins(tmp_path, "host-a") is True, line
+
+
+@pytest.mark.parametrize("bad", ["Full", "on", "yes", "true", "1", "full off"])
+def test_an_unknown_plugins_value_is_a_clear_fail(tmp_path, bad):
+    conf = machine_conf_path(tmp_path, "host-a")
+    conf.parent.mkdir(parents=True)
+    conf.write_bytes(f"PLUGINS={bad}\n".encode())
+    with pytest.raises(Fail) as err:
+        machineconf.read_machine_plugins(tmp_path, "host-a")
+    assert "PLUGINS" in err.value.message and "machines/host-a.conf" in err.value.message
+    assert "'full' or 'off'" in err.value.hint
+    assert str(conf) in err.value.hint
+
+
+def test_write_machine_plugins_keeps_other_lines_and_off_removes_the_line(tmp_path):
+    conf = machine_conf_path(tmp_path, "host-a")
+    conf.parent.mkdir(parents=True)
+    original = b"# note \xff\nPRIMARY_PROJECT_PATH=/p\nTIER=basic\nMCP_SYNC=on\nEXTRA=1"
+    conf.write_bytes(original)
+    machineconf.write_machine_plugins(tmp_path, "host-a", True)
+    assert conf.read_bytes() == original + b"\nPLUGINS=full\n"
+    machineconf.write_machine_plugins(tmp_path, "host-a", True)
+    assert conf.read_bytes().count(b"PLUGINS=") == 1
+    assert machineconf.read_machine_plugins(tmp_path, "host-a") is True
+    assert machineconf.read_machine_mcp_sync(tmp_path, "host-a") is True
+    assert machineconf.read_machine_tier(tmp_path, "host-a") == "basic"
+    machineconf.write_machine_plugins(tmp_path, "host-a", False)
+    assert conf.read_bytes() == original + b"\n"
+    assert machineconf.read_machine_plugins(tmp_path, "host-a") is False

@@ -47,6 +47,9 @@ def edit(m, text: str) -> None:
         ("https://user:secret@github.com/owner/repo.git", "owner/repo"),
         ("git@git.example.test:owner/repo.git", "git.example.test/owner/repo"),
         ("https://git.example.test:8443/owner/repo.git", "git.example.test/owner/repo"),
+        ("ssh://git@ssh.github.com:443/owner/repo.git", "owner/repo"),
+        ("git@GitHub.com:owner/repo.git", "owner/repo"),
+        ("git@github-work:owner/repo.git", "github-work/owner/repo"),
         ("https://github.com/owner", None),
         ("https://github.com/a/b/c", None),
         ("/some/local/path.git", None),
@@ -175,9 +178,22 @@ def test_a_sync_with_nothing_new_is_a_quiet_no_op(world):
     assert calls(world) == n_calls
 
 
-def test_without_gh_the_branch_is_pushed_and_applied_and_sync_fails_loudly(world, monkeypatch, tmp_path):
+def push_without_pr(world, a, monkeypatch) -> None:
+    """Pushes sync/host-a with gh working but its PR create failing, so the
+    branch is on origin with no PR (gh must work for a push to happen)."""
+    monkeypatch.setenv("FAKE_GH_CREATE_RC", "1")
+    rc, out = world.run(a, "sync")
+    assert rc == 1, out
+    assert "'gh pr create' failed" in out
+    monkeypatch.delenv("FAKE_GH_CREATE_RC")
+
+
+def test_gh_gone_after_an_earlier_push_leaves_no_pr_and_sync_fails_loudly(world, monkeypatch, tmp_path):
+    """The branch was pushed by an earlier run (its PR create failed), then
+    gh went away: nothing new to push, so only the PR step complains."""
     a = world.machine("a")
     edit(a, "edit one")
+    push_without_pr(world, a, monkeypatch)
     good_gh = os.environ["CLAUDE_SYNC_GH"]
     monkeypatch.setenv("CLAUDE_SYNC_GH", str(tmp_path / "no-such-gh"))
 
@@ -200,6 +216,7 @@ def test_without_gh_the_branch_is_pushed_and_applied_and_sync_fails_loudly(world
 def test_gh_missing_message(world, monkeypatch, tmp_path):
     a = world.machine("a")
     edit(a, "edit one")
+    push_without_pr(world, a, monkeypatch)
     monkeypatch.setenv("CLAUDE_SYNC_GH", str(tmp_path / "no-such-gh"))
     rc, out = world.run(a, "sync")
     assert rc == 1
@@ -211,6 +228,7 @@ def test_gh_missing_message(world, monkeypatch, tmp_path):
 def test_gh_not_logged_in_message(world, monkeypatch):
     a = world.machine("a")
     edit(a, "edit one")
+    push_without_pr(world, a, monkeypatch)
     monkeypatch.setenv("FAKE_GH_AUTH_RC", "1")
     rc, out = world.run(a, "sync")
     assert rc == 1
@@ -219,6 +237,225 @@ def test_gh_not_logged_in_message(world, monkeypatch):
     assert "gh pr create --repo test/repo" in out
     assert "Run 'gh auth login'" in out
     assert "Traceback" not in out
+
+
+# ── origin must be private and not a template ─────────────────────────────
+
+
+def assert_nothing_pushed(world, a) -> None:
+    refute(["git", "-C", world.origin, "show-ref", "-q", "--verify", "refs/heads/sync/host-a"])
+    assert "gh pr create" not in calls(world)
+    refute(["git", "-C", a.repo, "config", "--get", "claude-sync.lastPushed"])
+    # The live config was still applied; only the push was held back.
+    assert (a.claude / "CLAUDE.md").read_text() == "edit one\n"
+
+
+@pytest.mark.parametrize(
+    ("kind", "reason"),
+    [
+        ("public", "origin (test/repo) is a public repo"),
+        ("template", "origin (test/repo) is a GitHub template repo"),
+        ("error", "could not verify origin is private (test/repo): 'gh api repos/test/repo' failed (see the gh error above)"),
+        ("garbage", "could not verify origin is private (test/repo): gh gave an answer that could not be read"),
+    ],
+)
+def test_a_public_template_or_unreadable_origin_is_refused(world, monkeypatch, kind, reason):
+    a = world.machine("a")
+    edit(a, "edit one")
+    monkeypatch.setenv("FAKE_GH_VISIBILITY", kind)
+    rc, out = world.run(a, "sync")
+    assert rc == 1, out
+    assert f"refusing to push sync/host-a: {reason}. Nothing was pushed." in out
+    assert f"git -C {a.repo} remote set-url origin <url>" in out
+    assert "PRIVATE repo that is not a template" in out
+    assert "gh api --hostname github.com repos/test/repo --jq " in calls(world)
+    if kind == "error":
+        assert "Not Found (HTTP 404)" in out
+    assert "Traceback" not in out
+    assert_nothing_pushed(world, a)
+
+    # Fixed: the next sync pushes.
+    monkeypatch.delenv("FAKE_GH_VISIBILITY")
+    assert "pushed sync/host-a" in world.ok(a, "sync")
+
+
+def test_gh_missing_refuses_the_push(world, monkeypatch, tmp_path):
+    a = world.machine("a")
+    edit(a, "edit one")
+    monkeypatch.setenv("CLAUDE_SYNC_GH", str(tmp_path / "no-such-gh"))
+    rc, out = world.run(a, "sync")
+    assert rc == 1
+    assert (
+        "refusing to push sync/host-a: could not verify origin is private (test/repo): "
+        "the GitHub CLI (gh) is not installed. Nothing was pushed."
+    ) in out
+    assert_nothing_pushed(world, a)
+
+
+def test_gh_not_logged_in_refuses_the_push(world, monkeypatch):
+    a = world.machine("a")
+    edit(a, "edit one")
+    monkeypatch.setenv("FAKE_GH_AUTH_RC", "1")
+    rc, out = world.run(a, "sync")
+    assert rc == 1
+    assert "could not verify origin is private (test/repo): gh is not logged in. Nothing was pushed." in out
+    assert "You are not logged into any GitHub hosts" in out
+    assert "gh api" not in calls(world)
+    assert_nothing_pushed(world, a)
+
+
+@pytest.mark.parametrize("forced", ["", "test/repo"])
+def test_a_push_url_without_a_slug_refuses_the_push(world, monkeypatch, forced):
+    """An explicit pushurl skips pushInsteadOf, so this push would go to the
+    local path, which names no repo: refused, whatever CLAUDE_SYNC_GH_REPO says."""
+    a = world.machine("a")
+    edit(a, "edit one")
+    if forced:
+        monkeypatch.setenv("CLAUDE_SYNC_GH_REPO", forced)
+    else:
+        monkeypatch.delenv("CLAUDE_SYNC_GH_REPO")
+    git("-C", a.repo, "config", "remote.origin.pushurl", world.origin)
+    rc, out = world.run(a, "sync")
+    assert rc == 1
+    assert (
+        "could not verify origin is private: could not work out owner/repo from origin's push URL "
+        f"{world.origin}. Nothing was pushed."
+    ) in out
+    assert "CLAUDE_SYNC_GH_REPO" not in out
+    assert "gh " not in calls(world)
+    assert_nothing_pushed(world, a)
+
+
+def test_the_env_repo_must_match_the_push_url(world, monkeypatch):
+    """CLAUDE_SYNC_GH_REPO naming a private repo cannot vouch for a public origin."""
+    a = world.machine("a")
+    edit(a, "edit one")
+    monkeypatch.setenv("FAKE_GH_PUBLIC", "test/repo")
+    monkeypatch.setenv("CLAUDE_SYNC_GH_REPO", "someone/private")
+    rc, out = world.run(a, "sync")
+    assert rc == 1, out
+    assert (
+        "could not verify origin is private: CLAUDE_SYNC_GH_REPO is someone/private, but origin pushes"
+        " to test/repo; unset it or make it match. Nothing was pushed."
+    ) in out
+    assert "gh " not in calls(world)
+    assert_nothing_pushed(world, a)
+    # Case and a github.com/ prefix do not count as a mismatch; then the real check runs.
+    monkeypatch.setenv("CLAUDE_SYNC_GH_REPO", "github.com/Test/Repo")
+    rc, out = world.run(a, "sync")
+    assert rc == 1
+    assert "origin (test/repo) is a public repo" in out
+
+
+def test_the_push_url_is_checked_not_the_fetch_url(world, monkeypatch):
+    a = world.machine("a")
+    monkeypatch.delenv("CLAUDE_SYNC_GH_REPO")
+    monkeypatch.setenv("FAKE_GH_PUBLIC", "pub/lic")
+    git("-C", a.repo, "remote", "set-url", "origin", "git@github.com:priv/ate.git")
+    git("-C", a.repo, "config", "remote.origin.pushurl", "git@github.com:pub/lic.git")
+    assert pr.origin_visibility_problem(a.ctx()) == "origin (pub/lic) is a public repo"
+    assert "gh api --hostname github.com repos/pub/lic " in calls(world)
+    # The other way round it passes: the fetch URL's repo is never asked about.
+    git("-C", a.repo, "remote", "set-url", "origin", "git@github.com:pub/lic.git")
+    git("-C", a.repo, "config", "remote.origin.pushurl", "git@github.com:priv/ate.git")
+    assert pr.origin_visibility_problem(a.ctx()) is None
+
+
+def test_push_insteadof_is_followed(world, monkeypatch):
+    a = world.machine("a")
+    monkeypatch.delenv("CLAUDE_SYNC_GH_REPO")
+    monkeypatch.setenv("FAKE_GH_PUBLIC", "pub/lic")
+    git("-C", a.repo, "remote", "set-url", "origin", "https://github.com/priv/ate.git")
+    git("-C", a.repo, "config", "url.git@github.com:pub/lic.git.pushInsteadOf", "https://github.com/priv/ate.git")
+    assert pr.origin_visibility_problem(a.ctx()) == "origin (pub/lic) is a public repo"
+
+
+def test_several_push_urls_must_name_one_repo(world, monkeypatch):
+    """git push pushes to every pushurl; get-url --push alone shows the first."""
+    a = world.machine("a")
+    monkeypatch.delenv("CLAUDE_SYNC_GH_REPO")
+    monkeypatch.setenv("FAKE_GH_PUBLIC", "pub/lic")
+    git("-C", a.repo, "config", "remote.origin.pushurl", "git@github.com:priv/ate.git")
+    git("-C", a.repo, "config", "--add", "remote.origin.pushurl", "git@github.com:pub/lic.git")
+    reason = pr.origin_visibility_problem(a.ctx())
+    assert reason == "could not verify origin is private: origin pushes to more than one repo (priv/ate, pub/lic)"
+    git("-C", a.repo, "config", "--replace-all", "remote.origin.pushurl", "https://github.com/priv/ate")
+    git("-C", a.repo, "config", "--add", "remote.origin.pushurl", "git@github.com:Priv/Ate.git")
+    assert pr.origin_visibility_problem(a.ctx()) is None
+
+
+def test_gh_host_cannot_redirect_the_check(world, monkeypatch):
+    a = world.machine("a")
+    edit(a, "edit one")
+    monkeypatch.setenv("GH_HOST", "other.example")
+    assert "pushed sync/host-a" in world.ok(a, "sync")
+    log = calls(world)
+    assert "gh auth status --hostname github.com\n" in log
+    assert "gh api --hostname github.com repos/test/repo --jq " in log
+
+
+def test_ssh_github_com_on_port_443_is_github_com(world, monkeypatch):
+    a = world.machine("a")
+    monkeypatch.delenv("CLAUDE_SYNC_GH_REPO")
+    git("-C", a.repo, "config", "remote.origin.pushurl", "ssh://git@ssh.github.com:443/test/repo.git")
+    assert pr.origin_visibility_problem(a.ctx()) is None
+    assert "gh api --hostname github.com repos/test/repo " in calls(world)
+
+
+def test_an_ssh_alias_that_gh_does_not_know_is_named(world, monkeypatch):
+    a = world.machine("a")
+    monkeypatch.delenv("CLAUDE_SYNC_GH_REPO")
+    monkeypatch.setenv("FAKE_GH_AUTH_RC", "1")
+    git("-C", a.repo, "config", "remote.origin.pushurl", "git@github-work:test/repo.git")
+    reason = pr.origin_visibility_problem(a.ctx())
+    assert reason.startswith(
+        "could not verify origin is private (github-work/test/repo): gh is not logged in to github-work,"
+        " an unknown host (an SSH alias?"
+    )
+    assert "gh auth status --hostname github-work\n" in calls(world)
+    assert "gh api" not in calls(world)
+
+
+def test_a_private_origin_pushes_and_an_internal_one_too(world, monkeypatch):
+    a = world.machine("a")
+    edit(a, "edit one")
+    out = world.ok(a, "sync")
+    assert "pushed sync/host-a" in out
+    assert "gh api --hostname github.com repos/test/repo --jq " in calls(world)
+    edit(a, "edit two")
+    monkeypatch.setenv("FAKE_GH_VISIBILITY", "internal")
+    assert "pushed sync/host-a" in world.ok(a, "sync")
+
+
+def test_nothing_to_push_makes_no_api_call(world):
+    a = world.machine("a")
+    edit(a, "edit one")
+    world.ok(a, "sync")
+    before = calls(world)
+    world.ok(a, "sync")
+    assert "gh api" not in calls(world)[len(before):]
+
+
+def test_an_enterprise_host_is_checked_with_hostname(world, monkeypatch):
+    a = world.machine("a")
+    edit(a, "edit one")
+    monkeypatch.setenv("CLAUDE_SYNC_GH_REPO", "git.example.test/owner/repo")
+    git("-C", a.repo, "config", "remote.origin.pushurl", "git@git.example.test:owner/repo.git")
+    world.run(a, "sync")
+    log = calls(world)
+    assert "gh auth status --hostname git.example.test\n" in log
+    assert "gh api --hostname git.example.test repos/owner/repo --jq " in log
+
+
+@pytest.mark.parametrize("slug", ["a/b/c/d", "a//b", "/a/b"])
+def test_an_odd_env_slug_is_refused(world, monkeypatch, slug):
+    a = world.machine("a")
+    edit(a, "edit one")
+    monkeypatch.setenv("CLAUDE_SYNC_GH_REPO", slug)
+    rc, out = world.run(a, "sync")
+    assert rc == 1
+    assert f"could not verify origin is private: CLAUDE_SYNC_GH_REPO is {slug}, but origin pushes to test/repo" in out
+    assert_nothing_pushed(world, a)
 
 
 def test_a_failed_pr_create_fails_loudly(world, monkeypatch):

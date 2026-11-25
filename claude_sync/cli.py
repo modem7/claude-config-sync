@@ -51,7 +51,8 @@ Usage: claude-sync.sh [push|pull|remote [--plugins] [--tools]|sync|bootstrap|doc
              and the installer are refused. CLAUDE_SYNC_REMOTE=0 turns this off.
   Nothing is ever pushed to the default branch; changes reach other machines when the PR is merged.
   The PR step needs gh, logged in. CLAUDE_SYNC_GH=<path> picks the gh binary;
-  CLAUDE_SYNC_GH_REPO=owner/repo sets the repo when origin's URL doesn't show it.
+  CLAUDE_SYNC_GH_REPO=owner/repo sets the PR's repo when origin's URL doesn't show it (it must match
+  the repo origin's push URL names, which is the one checked to be private before each push).
   Needs git 2.40+. A second run waits CLAUDE_SYNC_LOCK_WAIT seconds (default 10) for the first.
   Before apply overwrites or deletes a local file that differs, it copies it to
   ~/.claude/.claude-sync-backups/<UTC time>/. CLAUDE_SYNC_BACKUPS=N keeps the newest N (default 10; 0: none).
@@ -60,10 +61,11 @@ Usage: claude-sync.sh [push|pull|remote [--plugins] [--tools]|sync|bootstrap|doc
        claude-sync.sh tier basic               # stop syncing memory here (TIER= in machines/<hostname>.conf)
   tier: basic syncs CLAUDE.md, settings.json, agents, hooks and skills; full (the default) adds memory.
   'tier full' needs the primary project path once (PROJECT_PATH) if the conf has none.
-  machine NAME show                       show another machine's tier, profile and settings overrides
+  machine NAME show                       show another machine's tier, profile, plugins and settings overrides
   machine NAME tier basic|full [PATH]     set its tier        machine NAME profile use PROFILE
   machine NAME plugin enable|disable|inherit PLUGIN@MARKET     choose its plugins (inherit: follow shared)
   machine NAME override set JQ_PATH JSON | unset JQ_PATH       any other settings key, for that machine only
+  machine NAME plugins full|off           full: sync, pull and remote install the plugins its settings.json enables
              Edits the repo only, through this machine's sync branch and PR. NAME can be a machine that is off,
              or 'cloud' (what 'remote' runs as; an environment can set CLAUDE_SYNC_HOSTNAME to be another).
   status --line  one line when this machine needs attention (last hook sync failed, a doctor
@@ -72,7 +74,8 @@ Usage: claude-sync.sh [push|pull|remote [--plugins] [--tools]|sync|bootstrap|doc
              --json prints the line as one hook JSON object (systemMessage for you, additionalContext for Claude).
   doctor install-plugins  run the claude plugin commands doctor lists (marketplaces first), after a
              y/N prompt; --yes skips it, no terminal and no --yes is refused. Stops at the first failure.
-             Plain doctor and doctor remediate never install anything.
+             Plain doctor never installs anything. PLUGINS=full in machines/<hostname>.conf runs it with --yes
+             after each sync, pull and remote (so also after doctor remediate's sync); a failure there only warns.
 """
 
 # Commands that capture, commit or push: only on the default branch.
@@ -223,57 +226,78 @@ def _main(argv: list[str], env: Mapping[str, str]) -> int:
         return 0
 
     ctx = make_ctx(repo, env)
-    with ExitStack() as stack:
-        if cmd == "push":
-            gitflow.begin_sync(ctx, stack)
-            gitflow.do_capture_and_commit(ctx)
-            gitflow.do_squash(ctx)
-            pr.do_push(ctx)
-        elif cmd == "pull":
-            if offline:
-                pass  # `remote`: no fetch and no rebase, whatever the branch or upstream
-            elif gitflow.on_default_branch(repo) and gitflow.has_origin(repo):
+    # The plugin installs run after the `with` has released the sync lock,
+    # so it is not held while `claude plugin install` fetches. Each is armed
+    # only once the apply is done ("auto": PLUGINS=full, never fails the run).
+    plugins = {"auto": False, "explicit": False}
+
+    def arm_auto() -> None:
+        plugins["auto"] = True
+
+    try:
+        with ExitStack() as stack:
+            if cmd == "push":
+                gitflow.begin_sync(ctx, stack)
+                gitflow.do_capture_and_commit(ctx)
+                gitflow.do_squash(ctx)
+                pr.do_push(ctx)
+            elif cmd == "pull":
+                if offline:
+                    pass  # `remote`: no fetch and no rebase, whatever the branch or upstream
+                elif gitflow.on_default_branch(repo) and gitflow.has_origin(repo):
+                    gitflow.begin_sync(ctx, stack)
+                    gitflow.do_integrate(ctx)
+                else:
+                    gitflow.integrate_current_branch(ctx)
+                gitflow.do_apply(ctx)
+                if "--tools" in extras:  # gh and ccusage; the pip packages only serve agent-memory
+                    tools.install_gh_tools()
+                    tools.install_npm_tools()
+                if "--plugins" in extras:  # the config is already applied if this fails
+                    plugins["explicit"] = True
+                else:
+                    arm_auto()
+            elif cmd == "sync":
+                gitflow.begin_sync(ctx, stack)
+                gitflow.do_capture_and_commit(ctx)
+                doctor.finish_sync(ctx, applied=arm_auto)
+            elif cmd == "bootstrap":
                 gitflow.begin_sync(ctx, stack)
                 gitflow.do_integrate(ctx)
+                gitflow.do_apply_merge(ctx)
+                gitflow.do_capture_and_commit(ctx)
+                gitflow.do_squash(ctx)
+                pr.do_push(ctx)
+            elif cmd == "override":
+                _override(ctx, stack, args)
+            elif cmd == "profile":
+                _profile(ctx, stack, args)
+            elif cmd == "tier":
+                _tier(ctx, stack, args)
+            elif cmd == "machine":
+                machinecmd.machine(ctx, stack, args)
+            elif cmd == "doctor" and sub == "install-plugins":
+                return doctor.install_plugins(ctx, args[1:])
+            elif cmd == "doctor":
+                return doctor.do_doctor(
+                    ctx,
+                    stack,
+                    remediate=sub == "remediate",
+                    run_sync=lambda: _nested_sync(env),
+                    offline=is_remote(env),
+                )
             else:
-                gitflow.integrate_current_branch(ctx)
-            gitflow.do_apply(ctx)
-            if "--tools" in extras:  # gh and ccusage; the pip packages only serve agent-memory
-                tools.install_gh_tools()
-                tools.install_npm_tools()
-            if "--plugins" in extras:  # the config is already applied if this fails
-                return doctor.install_plugins(ctx, ["--yes"])
-        elif cmd == "sync":
-            gitflow.begin_sync(ctx, stack)
-            gitflow.do_capture_and_commit(ctx)
-            doctor.finish_sync(ctx)
-        elif cmd == "bootstrap":
-            gitflow.begin_sync(ctx, stack)
-            gitflow.do_integrate(ctx)
-            gitflow.do_apply_merge(ctx)
-            gitflow.do_capture_and_commit(ctx)
-            gitflow.do_squash(ctx)
-            pr.do_push(ctx)
-        elif cmd == "override":
-            _override(ctx, stack, args)
-        elif cmd == "profile":
-            _profile(ctx, stack, args)
-        elif cmd == "tier":
-            _tier(ctx, stack, args)
-        elif cmd == "machine":
-            machinecmd.machine(ctx, stack, args)
-        elif cmd == "doctor" and sub == "install-plugins":
-            return doctor.install_plugins(ctx, args[1:])
-        elif cmd == "doctor":
-            return doctor.do_doctor(
-                ctx,
-                stack,
-                remediate=sub == "remediate",
-                run_sync=lambda: _nested_sync(env),
-                offline=is_remote(env),
-            )
-        else:
-            raise UsageError()
+                raise UsageError()
+    except Fail:
+        # A failed push or PR still leaves the config applied: install, then
+        # fail with the original error and exit code.
+        if plugins["auto"]:
+            doctor.auto_install_plugins(ctx)
+        raise
+    if plugins["explicit"]:
+        return doctor.install_plugins(ctx, ["--yes"])
+    if plugins["auto"]:
+        doctor.auto_install_plugins(ctx)
     return 0
 
 

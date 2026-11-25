@@ -2,7 +2,7 @@
 
 A machine you cannot run commands on (a throwaway cloud session, a machine
 that is off) still has a config in the repo: machines/NAME.conf (tier,
-profile) and machines/NAME.settings.json (settings override, which is how
+profile, PLUGINS=) and machines/NAME.settings.json (settings override, which is how
 its plugins are chosen). This edits those files, through this machine's sync
 branch and PR like `override` and `tier` do. It reads and writes the repo
 only; NAME's own ~/.claude is never touched."""
@@ -41,7 +41,7 @@ def machine(ctx: SyncCtx, stack: ExitStack, args: list[str]) -> None:
     if action == "show" and not rest:
         _show(ctx, name)
         return
-    if action in ("tier", "profile", "plugin", "override"):
+    if action in ("tier", "profile", "plugin", "plugins", "override"):
         _need_known(ctx, name)
     if action == "tier" and rest and rest[0] in ("basic", "full") and len(rest) <= 2:
         project = rest[1] if len(rest) == 2 else None
@@ -50,6 +50,8 @@ def machine(ctx: SyncCtx, stack: ExitStack, args: list[str]) -> None:
     elif action == "profile" and len(rest) == 2 and rest[0] == "use":
         _change(ctx, stack, f"machine: {name} uses profile {rest[1]}", lambda: _profile(ctx, name, rest[1]))
         print(f"{name} now follows profile '{rest[1]}'{_when(ctx, name)}.")
+    elif action == "plugins" and len(rest) == 1 and rest[0] in ("full", "off"):
+        _plugins(ctx, stack, name, rest[0] == "full")
     elif action == "plugin" and len(rest) == 2 and rest[0] in ("enable", "disable", "inherit"):
         _plugin(ctx, stack, name, rest[0], rest[1])
     elif action == "override" and len(rest) >= 2 and rest[0] in ("set", "unset"):
@@ -122,6 +124,15 @@ def _show(ctx: SyncCtx, name: str) -> None:
     print(f"{name}: " + (f"machines/{name}.conf exists." if conf.is_file() else f"no machines/{name}.conf yet."))
     print(f"  tier: {tier}" + ("" if conf.is_file() else " (the default; `remote` makes a missing conf basic)"))
     print(f"  profile: {prof}" + (" (its own)" if prof == name else " (shared: changes to its overrides reach every machine on it)"))
+    try:
+        auto = machineconf.read_machine_plugins(repo, name)
+    except Fail as err:
+        print(f"  plugins: {err.message}")
+    else:
+        print(
+            "  plugins: full (sync, pull and remote install what its settings.json enables)"
+            if auto else "  plugins: off (the default; install them with 'doctor install-plugins')"
+        )
     print("  settings overrides:")
     for line in overlay.overlay_list(repo, prof):
         print(f"    {line}")
@@ -158,6 +169,29 @@ def _profile(ctx: SyncCtx, name: str, prof: str) -> None:
         )
     _new_conf_is_basic(ctx, name)
     machineconf.write_machine_profile(ctx.repo, name, "" if prof == name else prof)
+
+
+def _plugins(ctx: SyncCtx, stack: ExitStack, name: str, on: bool) -> None:
+    """PLUGINS=full or off in NAME's conf. A new cloud conf starts basic, as `remote` makes it."""
+    value = "full" if on else "off"
+    conf = machineconf.machine_conf_path(ctx.repo, name)
+    try:
+        current = machineconf.read_machine_plugins(ctx.repo, name) if conf.is_file() else False
+    except Fail:
+        current = None  # a bad value: rewrite it
+    if current is on:
+        print(f"{name} already has plugins {value}. Nothing was changed.")
+        return
+
+    def edit() -> None:
+        _new_conf_is_basic(ctx, name)
+        machineconf.write_machine_plugins(ctx.repo, name, on)
+
+    _change(ctx, stack, f"machine: {name} plugins {value}", edit)
+    what = "now installs the plugins its settings.json enables after each sync, pull and remote" if on else (
+        "no longer installs plugins by itself"
+    )
+    print(f"{name} {what}{_when(ctx, name)}.")
 
 
 def _plugin(ctx: SyncCtx, stack: ExitStack, name: str, action: str, plugin_id: str) -> None:

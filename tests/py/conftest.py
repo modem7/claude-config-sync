@@ -13,6 +13,7 @@ Layout inside each test's tmp_path:
 from __future__ import annotations
 
 import os
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -94,6 +95,8 @@ def fake_home(tmp_path, monkeypatch) -> FakeHome:
 
 # A port of install_fake_gh's stub. Paths are relative to the script, so it
 # needs no env; FAKE_GH_AUTH_RC / FAKE_GH_CREATE_RC make those calls fail.
+# `gh api repos/...` answers "private" unless FAKE_GH_VISIBILITY is
+# public|template|internal|error|garbage, or FAKE_GH_PUBLIC names that repo.
 FAKE_GH_SCRIPT = r'''
 import os
 import re
@@ -124,7 +127,26 @@ def main(args):
     key = opts.get("--head", "").replace("/", "_")
     cmd = " ".join(args[:2])
     open_pr = STATE / f"open-{key}"
-    if cmd == "auth status":
+    if args[:1] == ["api"]:
+        if int(os.environ.get("FAKE_GH_AUTH_RC", "0") or 0):
+            err("gh: To get started with GitHub CLI, please run:  gh auth login")
+            return 4
+        kind = os.environ.get("FAKE_GH_VISIBILITY", "") or "private"
+        public = os.environ.get("FAKE_GH_PUBLIC", "")
+        if public and f"repos/{public}" in args:
+            kind = "public"
+        if kind == "error":
+            err("gh: Not Found (HTTP 404)")
+            return 1
+        answers = {
+            "private": "true false private",
+            "internal": "true false internal",
+            "public": "false false public",
+            "template": "true true private",
+            "garbage": "not json",
+        }
+        out(answers[kind])
+    elif cmd == "auth status":
         rc = int(os.environ.get("FAKE_GH_AUTH_RC", "0") or 0)
         if rc:
             err("You are not logged into any GitHub hosts.")
@@ -183,6 +205,8 @@ def fake_gh(tmp_path, monkeypatch) -> Path:
     script.write_text(FAKE_GH_SCRIPT.lstrip(), encoding="utf-8", newline="\n")
     monkeypatch.setenv("CLAUDE_SYNC_GH", str(script))
     monkeypatch.setenv("CLAUDE_SYNC_GH_REPO", "test/repo")
+    for knob in ("FAKE_GH_AUTH_RC", "FAKE_GH_CREATE_RC", "FAKE_GH_VISIBILITY", "FAKE_GH_PUBLIC", "GH_HOST"):
+        monkeypatch.delenv(knob, raising=False)
     return script
 
 
@@ -218,10 +242,49 @@ def git_repo(tmp_path, fake_home) -> GitRepo:
     return GitRepo(origin=origin, clone=clone)
 
 
+# A stand-in ssh: git runs it as `<this> ORIGIN host "git-receive-pack 'x'"`
+# (ssh.variant simple), and it serves that pack command from ORIGIN.
+FAKE_SSH_SCRIPT = r'''
+import shlex
+import subprocess
+import sys
+
+command = shlex.split(sys.argv[-1])
+sys.exit(subprocess.call(["git", command[0].removeprefix("git-"), sys.argv[1]]))
+'''
+
+GITHUB_PUSH_URL = "git@github.com:test/repo.git"
+
+
+def push_through_github_url(home: Path, origin: Path, fake_dir: Path, monkeypatch) -> None:
+    """Pushes to `origin` go out as GITHUB_PUSH_URL, the way a real
+    pushInsteadOf does, so the push guard sees owner/repo test/repo, and a
+    fake ssh delivers them to `origin`. Set in the fake HOME's ~/.gitconfig,
+    so every clone of origin in the test gets it. Fetches stay local."""
+    for name in ("GIT_SSH", "GIT_SSH_COMMAND", "GIT_SSH_VARIANT", "GIT_CONFIG_COUNT", "GIT_CONFIG_PARAMETERS"):
+        monkeypatch.delenv(name, raising=False)
+    if os.name != "nt":  # keep Git for Windows' own system defaults
+        monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    ssh = fake_dir / "ssh.py"
+    ssh.write_text(FAKE_SSH_SCRIPT.lstrip(), encoding="utf-8", newline="\n")
+    python = Path(sys.executable).as_posix()
+    gitconfig = str(home / ".gitconfig")
+    # Clones store origin's URL as given: str() on Windows has backslashes.
+    for form in dict.fromkeys((str(origin), origin.as_posix())):
+        run(["git", "config", "--file", gitconfig, "--add", f"url.{GITHUB_PUSH_URL}.pushInsteadOf", form], check=True)
+    for key, value in (
+        ("core.sshCommand", f'"{python}" "{ssh.as_posix()}" "{origin.as_posix()}"'),
+        ("ssh.variant", "simple"),
+    ):
+        run(["git", "config", "--file", gitconfig, key, value], check=True)
+
+
 @pytest.fixture
-def world(tmp_path, git_repo, fake_gh):
+def world(tmp_path, fake_home, git_repo, fake_gh, monkeypatch):
     """tests/sync_pr.bats' world: origin seeded with two machines' configs,
-    the fake gh (gh_state = its state dir)."""
+    the fake gh (gh_state = its state dir). Pushes to origin go through
+    GITHUB_PUSH_URL (see push_through_github_url)."""
     from world import World
 
+    push_through_github_url(fake_home.root, git_repo.origin, fake_gh.parent, monkeypatch)
     return World(tmp_path, git_repo.origin, fake_gh)

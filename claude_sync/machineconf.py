@@ -4,8 +4,10 @@ The file maps a hostname to the local project
 whose memory dir is synced, optionally to the machine profile it follows
 (PROFILE=), optionally to its sync tier (TIER=basic|full; no line means
 full), and optionally opts it in to syncing user-scope MCP servers
-(MCP_SYNC=on|off; no line means off, see claude_sync/mcpsync.py). Files
-are handled as bytes so lines this code does not know survive intact.
+(MCP_SYNC=on|off; no line means off, see claude_sync/mcpsync.py), and
+optionally to installing the plugins its settings.json enables after each
+sync, pull or remote (PLUGINS=full|off; no line means off). Files are
+handled as bytes so lines this code does not know survive intact.
 
 On Windows the project path is stored and shown in the native drive form
 (`Z:\\projects`). A conf written by the bash under Git Bash holds `/z/projects`;
@@ -29,6 +31,7 @@ _PROJECT_KEY = b"PRIMARY_PROJECT_PATH="
 _PROFILE_KEY = b"PROFILE="
 _TIER_KEY = b"TIER="
 _MCP_SYNC_KEY = b"MCP_SYNC="
+_PLUGINS_KEY = b"PLUGINS="
 
 # basic: CLAUDE.md, settings.json, agents, hooks, skills (and profiles and
 # overrides). full: basic plus the primary project's memory folder and the
@@ -41,6 +44,10 @@ DEFAULT_TIER = TIER_FULL
 # MCP_SYNC=on opts a machine in to syncing its user-scope MCP servers.
 MCP_SYNC_ON = "on"
 MCP_SYNC_OFF = "off"
+
+# PLUGINS=full installs what settings.json enables after sync, pull and remote.
+PLUGINS_FULL = "full"
+PLUGINS_OFF = "off"
 
 # `/z` or `/z/...` (Git Bash), or `z:` / `z:\\...` / `z:/...` (native).
 _DRIVE = re.compile(r"^(?:/([A-Za-z])|([A-Za-z]):)(?=[\\/]|$)")
@@ -172,3 +179,24 @@ def read_machine_mcp_sync(repo: Path, hostname: str) -> bool:
 def write_machine_mcp_sync(repo: Path, hostname: str, on: bool) -> None:
     """Set MCP_SYNC=on, or remove the line for off (the default). Other lines stay."""
     _set_line(repo, hostname, _MCP_SYNC_KEY, MCP_SYNC_ON if on else "")
+
+
+def read_machine_plugins(repo: Path, hostname: str) -> bool:
+    """True only for PLUGINS=full. No conf, no line, an empty value or 'off'
+    is False. Fail for any other value."""
+    value = (_value(repo, hostname, _PLUGINS_KEY) or "").strip()
+    if value == PLUGINS_FULL:
+        return True
+    if value in ("", PLUGINS_OFF):
+        return False
+    shown = value.encode("unicode_escape").decode("ascii")
+    raise Fail(
+        f"Not a valid PLUGINS value in machines/{hostname}.conf: '{shown}'.",
+        hint=f"  Set the PLUGINS= line in {machine_conf_path(repo, hostname)} to 'full' or 'off'"
+        " (or remove it for off), then re-run.",
+    )
+
+
+def write_machine_plugins(repo: Path, hostname: str, on: bool) -> None:
+    """Set PLUGINS=full, or remove the line for off (the default). Other lines stay."""
+    _set_line(repo, hostname, _PLUGINS_KEY, PLUGINS_FULL if on else "")

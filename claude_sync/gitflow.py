@@ -279,6 +279,13 @@ def mcp_sync_enabled(ctx: SyncCtx) -> bool:
     return current_tier(ctx) != machineconf.TIER_BASIC
 
 
+def plugins_auto_enabled(ctx: SyncCtx) -> bool:
+    """PLUGINS=full in this machine's conf, on any tier: sync, pull and
+    remote then install what settings.json enables. Read afresh each time.
+    Fail for a bad PLUGINS= value (callers warn and treat it as off)."""
+    return machineconf.read_machine_plugins(ctx.repo, ctx.hostname)
+
+
 def claude_json_path(ctx: SyncCtx) -> Path:
     """~/.claude.json: next to CLAUDE_HOME, not inside it."""
     return ctx.claude_home.parent / ".claude.json"

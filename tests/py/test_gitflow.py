@@ -524,14 +524,15 @@ def test_fresh_clone_skips_a_kept_branch_whose_pr_is_done(world):
     assert git("-C", world.origin, "show", "sync/host-a:dot-claude/CLAUDE.md").stdout == "edit two\n"
 
 
-def test_fresh_clone_picks_up_a_branch_pushed_without_a_pr(world):
+def test_fresh_clone_picks_up_a_branch_pushed_without_a_pr(world, monkeypatch):
     a = world.machine("a")
     (a.claude / "CLAUDE.md").write_text("pending edit\n")
-    a.gh_down = True
+    # A push needs gh (origin must be checked private), so fail the PR instead.
+    monkeypatch.setenv("FAKE_GH_CREATE_RC", "1")
     rc, _ = world.run(a, "sync")
     assert rc == 1  # pushed, but no PR
     pushed = rev(world.origin, "sync/host-a")
-    a.gh_down = False
+    monkeypatch.delenv("FAKE_GH_CREATE_RC")
     _reclone(world, a)
     out = world.ok(a, "sync")
     assert "picked up this machine's open sync/host-a" in out

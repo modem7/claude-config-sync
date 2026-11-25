@@ -4,6 +4,8 @@ A hands-on check of the Windows-only code paths in `claude_sync/` that CI does n
 
 Nothing here touches your real profile. Every step uses a throwaway folder, a local bare repo as `origin`, a stub `gh`, and `USERPROFILE` pointed at the folder. Do not run `install.cmd` as part of this test: it runs `npm install -g` and writes into the real home.
 
+**Known gap:** since the push guard (`docs/risks.md`, row 50), a push needs a stub `gh` that answers `gh api repos/<owner>/<repo>` with `true false private` and an `origin` whose push URL names `owner/repo`; the local bare `origin` and the stub below do not, so steps that expect "pushed sync/host-win" now print "refusing to push". Update the stub before relying on those steps.
+
 The "Expect" lines come from the source and from the same flow run on Linux. None of them has been seen on Windows yet; the point of this page is to find out. If a result differs, record the exact output and the exit code (`$LASTEXITCODE`) in the table at the end and open an issue. Do not edit the tool to make a test pass.
 
 ## What CI shows, and what it does not

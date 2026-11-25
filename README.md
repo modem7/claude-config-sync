@@ -54,7 +54,7 @@ You need three things on **every** machine: Python 3.12 or newer, git 2.40 or ne
 | **Git Bash** (Windows only) | Session hooks run `claude-sync.sh`. It comes with Git for Windows. | `python3 --version` inside Git Bash |
 | **Node.js / npm** (optional) | Only for the `ccusage` helper the installer adds. | `npm --version` |
 
-Without `gh` the branch is still pushed, but you have to open the PR by hand.
+Without `gh` nothing is pushed: before each push, sync asks GitHub whether the repo `origin` pushes to (its push URL) is private and not a template, and refuses (nothing pushed) if it is public, a template, or cannot be checked. Point `origin` at a private, non-template repo.
 
 ### Install them
 
@@ -322,13 +322,13 @@ The script is safe to paste as it is: it finds the sync repo by its `machines/` 
 
 - `remote` runs as a machine called `cloud`, on the `basic` tier (everything except memory, which is keyed to a project path that differs per container). It writes `machines/cloud.conf` with `TIER=basic` when the repo has none, without committing it, and needs no git identity. It applies the checkout as it was cloned, normally the default branch when the session started, so a change merged in a PR shows up in the next new session.
 - It is **one-way**. Edits made inside a remote session are not captured. Change shared config on a machine you own, or in a PR on the sync repo.
-- **Opt-in installs.** `--plugins` runs `doctor install-plugins --yes` after the apply: the `claude plugin marketplace add` and `claude plugin install` commands for what `settings.json` enables and the container lacks. Each fetches third-party code from the source named, which is why it is off unless you pass it. `--tools` installs `gh` (if missing) and `ccusage`; the Python packages for the agent-memory plugin are not part of it. A failed `--plugins` step leaves the applied config in place and fails the run; `--tools` problems only print a warning.
+- **Opt-in installs.** `--plugins` runs `doctor install-plugins --yes` after the apply: the `claude plugin marketplace add` and `claude plugin install` commands for what `settings.json` enables and the container lacks. Each fetches third-party code from the source named, which is why it is off unless you pass it. With `PLUGINS=full` in `machines/<hostname>.conf` (or `claude-sync.sh machine NAME plugins full`), `sync`, `pull` and `remote` run the same install with `--yes` after every apply, quietly when nothing is missing, so every plugin `settings.json` enables is installed without a command. It installs nothing else, a failure only prints a warning (the config is already applied), and the default is `off`. Because the list comes from a synced file, turn it on only for machines whose config repo you trust. `--tools` installs `gh` (if missing) and `ccusage`; the Python packages for the agent-memory plugin are not part of it. A failed `--plugins` step leaves the applied config in place and fails the run; `--tools` problems only print a warning.
 - **Not carried over:** credentials and MCP server logins.
 - **A cloud session is told apart from a machine you own** by Claude Code's `CLAUDE_CODE_REMOTE=true` (or `CLAUDE_SYNC_REMOTE=1`; `CLAUDE_SYNC_REMOTE=0` turns it off). There, `sync` and `pull` run as `remote`, and `push`, `bootstrap`, `override`, `profile`, `tier`, `machine` (except `machine NAME show`) and the installer are refused, so nothing is ever pushed. That makes the synced session hooks safe in a container too, and one `settings.json` work everywhere. The script names `remote` itself because that variable may not be set while it runs.
 
 ### Give the cloud machine its own config
 
-The cloud machine is a machine like any other: `machines/cloud.conf` holds its tier and profile, and `machines/cloud.settings.json` is its settings override, which is also how its plugins are chosen. Edit them from any machine you own with `machine`, which goes through your usual sync PR:
+The cloud machine is a machine like any other: `machines/cloud.conf` holds its tier, profile and (optionally) `PLUGINS=full`, and `machines/cloud.settings.json` is its settings override, which is also how its plugins are chosen. Edit them from any machine you own with `machine`, which goes through your usual sync PR:
 
 ```bash
 claude-sync.sh machine cloud show                                   # tier, profile, overrides
@@ -336,6 +336,7 @@ claude-sync.sh machine cloud plugin disable heavy-plugin@some-market # not on th
 claude-sync.sh machine cloud plugin enable  extra@some-market        # only on this machine
 claude-sync.sh machine cloud plugin inherit heavy-plugin@some-market # follow the shared setting again
 claude-sync.sh machine cloud override set .model '"haiku"'          # any other settings key
+claude-sync.sh machine cloud plugins full                           # install every enabled plugin on each session
 claude-sync.sh machine cloud tier full /absolute/path               # opt in to memory (see Sync tiers)
 claude-sync.sh machine cloud profile use my-profile                 # follow machines/my-profile/
 ```
@@ -415,15 +416,15 @@ Everything goes through one entry point. On Linux and macOS it is `claude-sync.s
 | `sync` | **The default.** Capture local changes, bring in the default branch, apply, push and open or update this machine's PR. |
 | `push` | Capture and push this machine's changes and open or update its PR. Does not apply. |
 | `pull` | Bring in the default branch (keeping this machine's unmerged changes) and apply it. |
-| `remote [--plugins] [--tools]` | For a throwaway cloud session (see [Remote sessions](#claude-code-on-the-web-remote-sessions)): applies the checkout as it is, as machine `cloud` on the basic tier. Never fetches or pushes. `--plugins` and `--tools` opt in to installing plugins, `gh` and `ccusage`. |
+| `remote [--plugins] [--tools]` | For a throwaway cloud session (see [Remote sessions](#claude-code-on-the-web-remote-sessions)): applies the checkout as it is, as machine `cloud` on the basic tier. Never fetches or pushes. `--plugins` and `--tools` opt in to installing plugins, `gh` and `ccusage`; `PLUGINS=full` on the cloud machine installs the plugins too. |
 | `bootstrap` | The one-time first sync that `install` runs for you. |
 | `doctor` | Check for a stuck sync, list plugins to install, and report MCP servers. Report only; it changes nothing. |
-| `doctor remediate` | Check, and fix what is safe to fix. Never installs plugins. |
+| `doctor remediate` | Check, and fix what is safe to fix. Never installs plugins itself (its retry sync does when `PLUGINS=full`). |
 | `doctor install-plugins [--yes]` | Run the plugin commands `doctor` lists, marketplaces first, after a y/N prompt (`--yes` skips it). Stops at the first failure. |
 | `override list` / `add PATH` / `remove PATH` | Manage settings that stay on this machine only. |
 | `profile list` / `show NAME` / `use NAME` / `copy NAME` | Manage per-machine profiles. |
 | `tier` / `tier basic` / `tier full [PROJECT_PATH]` | Show or change what this machine syncs (see [Sync tiers](#sync-tiers)). |
-| `machine NAME show` / `tier` / `profile use` / `plugin enable\|disable\|inherit` / `override set\|unset` | Show or change **another** machine's config (a cloud session, or a machine that is off) from this one, through your sync PR. See [Give the cloud machine its own config](#give-the-cloud-machine-its-own-config). |
+| `machine NAME show` / `tier` / `profile use` / `plugin enable\|disable\|inherit` / `plugins full\|off` / `override set\|unset` | Show or change **another** machine's config (a cloud session, or a machine that is off) from this one, through your sync PR. See [Give the cloud machine its own config](#give-the-cloud-machine-its-own-config). |
 | `status --line [--json]` | One line when this machine needs attention, nothing when it is healthy. Local only and fast. `--json` prints it as one hook JSON object instead; the `SessionStart` hook runs that (see [How a change travels](#how-a-change-travels)). |
 
 ```bash
@@ -471,7 +472,7 @@ You rarely need these.
 | `CLAUDE_SYNC_PROJECT_PATH` | Primary project folder (same as `--project-path`). |
 | `CLAUDE_SYNC_TIER` | `basic` or `full` for a new machine (same as `--tier`). |
 | `CLAUDE_SYNC_REPO`, `CLAUDE_SYNC_DIR` | Read by `get.sh` / `get.ps1` only (not the installer): the repo as `OWNER/REPO` and the clone folder. |
-| `CLAUDE_SYNC_GH_REPO` | `owner/repo`, if it cannot be worked out from the `origin` URL. |
+| `CLAUDE_SYNC_GH_REPO` | `owner/repo` for the PR, if it cannot be worked out from the `origin` URL. It must match the repo `origin`'s push URL names: the push guard checks that one and refuses when they differ. |
 | `CLAUDE_SYNC_GH` | Path to a `gh` that is not on your `PATH`. |
 | `CLAUDE_SYNC_LOCK_WAIT` | Seconds a second run waits for the first (default 10, must be 0 or more). |
 | `CLAUDE_SYNC_BACKUPS` | How many apply backup folders to keep in `~/.claude/.claude-sync-backups/` (default 10, a whole number; 0 makes none and leaves existing ones alone). |
@@ -507,7 +508,7 @@ They are synced but are not part of this template: the public mirror never ships
 
 ### Sync tiers
 
-Each machine has a tier, set by `TIER=` in `machines/<hostname>.conf` (an optional `MCP_SYNC=on` line there also turns on the MCP server sync, full tier only):
+Each machine has a tier, set by `TIER=` in `machines/<hostname>.conf` (an optional `MCP_SYNC=on` line there also turns on the MCP server sync, full tier only; an optional `PLUGINS=full` line installs the plugins `settings.json` enables after each sync, pull and remote):
 
 | Tier | Syncs | Installer adds |
 |---|---|---|
@@ -614,7 +615,8 @@ On Windows run the same commands with `py -3` in place of `python3`. `integratio
 |---|---|
 | Not sure what is wrong | `claude-sync.sh doctor`, then `doctor remediate` to fix what is safe. |
 | A session starts with a `claude-config:` line | `status --line` found something; the line says what to do. It goes once that is fixed and a sync has run. |
-| `gh` not found or not logged in | Install it and run `gh auth login`. Until then every sync pushes but cannot open a PR. |
+| `gh` not found or not logged in | Install it and run `gh auth login`. Until then every sync refuses to push, because it cannot check that `origin` is private. |
+| Sync says "refusing to push" | `origin` is public, a template, or could not be checked. Point it at your own private, non-template repo; see [runbook](docs/runbook.md), "Sync refuses to push". |
 | `python3` / `py` not found, or "needs Python 3.12" | Install Python 3.12 or newer. On Windows the `py` launcher is best. |
 | Sync fails with "a real conflict" | Your pending changes and a merged change edited the same lines. The message says how to resolve or drop them. |
 | Settings on this machine never catch up | Check this machine's own sync PR is merged. Until then other machines do not have its changes. |
@@ -622,7 +624,7 @@ On Windows run the same commands with `py -3` in place of `python3`. `integratio
 | Windows: pip install is refused | The installer retries once with `--user` by itself. |
 | Windows: `--repair` fails | Run `install.cmd --repair` from a prompt **outside** the clone (`cd /d %USERPROFILE%` first). |
 | Hook did not run on Linux after a Windows edit | `doctor` reports hooks committed without the exec bit; sync sets the bit on new hooks itself. |
-| Plugins show as enabled but are not installed (new or rebuilt machine) | `doctor` lists the `claude plugin marketplace add` and `claude plugin install` commands to run. It never runs them, and the exit code is unchanged. To run them, use `doctor install-plugins`: it shows them and asks first. Plugin code is not synced, only `settings.json`. |
+| Plugins show as enabled but are not installed (new or rebuilt machine) | `doctor` lists the `claude plugin marketplace add` and `claude plugin install` commands to run. It never runs them, and the exit code is unchanged. To run them, use `doctor install-plugins`: it shows them and asks first. To have every sync install them, set `PLUGINS=full` (see Opt-in installs). Plugin code is not synced, only `settings.json`. |
 | A local edit was lost to `pull` or `sync` | Copy it back from the newest folder in `~/.claude/.claude-sync-backups/`; `doctor` names it when it finds drift. See `docs/runbook.md`. |
 | Something is badly broken | `install.sh --repair` (Windows: `install.cmd --repair`). It resets only this tool's own state, then sets up again. |
 

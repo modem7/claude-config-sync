@@ -33,7 +33,7 @@ from claude_sync import gitflow, machineconf, mcpdoctor, overlay, pr, profile, s
 from claude_sync.gitflow import SyncCtx
 from claude_sync.memorypath import long_name_warning
 from claude_sync.syncfiles import _remove
-from claude_sync.util import Fail, UsageError, printable, run
+from claude_sync.util import Fail, UsageError, printable, redact, run
 
 
 class _Report:
@@ -126,6 +126,9 @@ def do_doctor(
 
     # Report only, never an ISSUE: remediate could not fix it, since doctor
     # never installs anything (only the separate install-plugins does).
+    plugins_line = _plugins_auto_line(ctx)
+    if plugins_line:
+        print(plugins_line)
     for line in plugin_report(ctx):
         print(line)
 
@@ -140,6 +143,20 @@ def do_doctor(
         sb = gitflow.sync_branch(ctx.hostname)
         print(f"Note: {sb} holds this machine's changes that are not merged yet; its PR shares them once merged.")
     return report.issues
+
+
+def _plugins_auto_line(ctx: SyncCtx) -> str:
+    """The PLUGINS= setting, when it is anything but off: a bad value is
+    shown, as sync and pull only warn about it and treat it as off."""
+    try:
+        if gitflow.plugins_auto_enabled(ctx):
+            return "Plugins: PLUGINS=full: sync, pull and remote install what settings.json enables."
+    except Fail as err:
+        return (
+            f"Warning: {err.message} sync and pull treat it as off. Fix it with"
+            f" 'claude-sync.sh machine {ctx.hostname} plugins full' (or off)."
+        )
+    return ""
 
 
 def _note_newest_backup(ctx: SyncCtx) -> None:
@@ -516,6 +533,7 @@ def install_plugins(
     *,
     ask: Callable[[str], str] | None = None,
     interactive: bool | None = None,
+    quiet: bool = False,
 ) -> int:
     """Runs the `claude plugin` commands plugin_report lists: marketplaces
     first, then plugins, stopping at the first failure. Shows them and asks
@@ -523,7 +541,10 @@ def install_plugins(
     (`interactive`, default: stdin is one) it refuses unless --yes. Returns
     0 when every command ran; a failure raises Fail. Entries the report
     only notes, and names that could not be run exactly as shown, are
-    listed and not run. Never touches the clone, so takes no lock."""
+    listed and not run. Never touches the clone, so takes no lock.
+    `quiet` (the PLUGINS=full auto run) looks for no claude CLI when there
+    is nothing this command could run, and prints nothing then, except one
+    stderr note when settings.json enables plugins it cannot install here."""
     yes = _install_args(args)
     plan = _plugin_plan(ctx)
     if isinstance(plan, str):
@@ -531,6 +552,10 @@ def install_plugins(
             f"Plugin check skipped: {plan}. Nothing was installed.",
             hint="  Fix or move the file named above (Claude Code may have changed its format), then re-run.",
         )
+    if quiet and (plan is None or not _maybe_runnable(plan)):
+        if plan is not None and plan.missing:
+            _note_not_installable(len(plan.missing))
+        return 0
     if plan is None or not (plan.add or plan.missing):
         print("Plugins: nothing to install; settings.json enables nothing this machine lacks.")
         for note in plan.notes if plan else []:
@@ -573,6 +598,10 @@ def install_plugins(
             continue
         steps.append((f"claude plugin install {_paste_arg(plugin_id)}", ["plugin", "install", plugin_id]))
 
+    if quiet and not steps:
+        if plan.missing:
+            _note_not_installable(len(plan.missing))
+        return 0
     if not_run:
         print("Not run here (do these by hand, or leave them to Claude Code):")
         for line in not_run:
@@ -613,6 +642,57 @@ def install_plugins(
         print(f"  ok: {line}")
     print(f"Plugins: ran {len(done)} command(s). Start a new Claude Code session to load them.")
     return 0
+
+
+def _maybe_runnable(plan: _PluginPlan) -> bool:
+    """Whether install_plugins could run anything for `plan`: a marketplace
+    to add, or a missing plugin whose marketplace is here. Cheap, no CLI."""
+    if plan.add:
+        return True
+    return any(p.rpartition("@")[2] in plan.known for p in plan.missing)
+
+
+def _note_not_installable(count: int) -> None:
+    """The quiet run's one line when it can run nothing for what is missing."""
+    print(
+        f"claude-sync: note: PLUGINS=full: settings.json enables {count} plugin(s) this machine lacks"
+        " and cannot install here (see 'claude-sync.sh doctor').",
+        file=sys.stderr,
+    )
+
+
+def _one_line(err: Fail | OSError) -> str:
+    cause = err.message if isinstance(err, Fail) else str(err)
+    cause = " ".join(redact(cause).split()) or type(err).__name__
+    return cause if cause.endswith((".", "!", "?")) else cause + "."
+
+
+def auto_install_plugins(ctx: SyncCtx) -> None:
+    """PLUGINS=full: install what settings.json enables, after a sync, pull
+    or remote has applied. Does nothing when the line is off or nothing is
+    missing. Never fails the run, so a bad PLUGINS= value (which may have
+    arrived by merge) never locks the machine out of the sync that fetches
+    the fix: it is one warning line on stderr and counts as off. An install
+    failure is one warning line too, and the exit code stays."""
+    try:
+        enabled = gitflow.plugins_auto_enabled(ctx)
+    except Fail as err:
+        print(
+            f"claude-sync: warning: PLUGINS: {_one_line(err)} Treated as off;"
+            f" fix it with 'claude-sync.sh machine {ctx.hostname} plugins full' (or off).",
+            file=sys.stderr,
+        )
+        return
+    if not enabled:
+        return
+    try:
+        install_plugins(ctx, ["--yes"], quiet=True)
+    except (Fail, OSError) as err:
+        print(
+            f"claude-sync: warning: PLUGINS=full: the plugin install did not finish: {_one_line(err)}"
+            " The config is already applied. Run 'claude-sync.sh doctor install-plugins' to see why and retry.",
+            file=sys.stderr,
+        )
 
 
 def _check_settings(ctx: SyncCtx, report: _Report, remediate: bool) -> None:
@@ -687,13 +767,15 @@ def doctor_profile(ctx: SyncCtx, report: Callable[[str], None], remediate: bool)
 # ── the shared tail ──────────────────────────────────────────────────────
 
 
-def finish_sync(ctx: SyncCtx) -> None:
+def finish_sync(ctx: SyncCtx, applied: Callable[[], None] | None = None) -> None:
     """The tail every repo-changing command shares once its own commits are
     on the sync branch: integrate, apply, then push and open the PR.
     Applying before pushing means a failed push or PR never leaves the live
-    config behind the clone."""
+    config behind the clone. `applied` is called between apply and push."""
     gitflow.do_integrate(ctx)
     gitflow.do_apply(ctx)
+    if applied is not None:
+        applied()
     pr.do_push(ctx)
 
 

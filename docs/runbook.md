@@ -18,7 +18,7 @@ Flags: `--yes`, `--dry-run`, `--dir`, `--project-path`, `--profile`, `--tier bas
 
 ## Restore a machine on new infrastructure
 
-First install the prerequisites: Python 3.12 or newer (the system one, not a venv), git 2.40 or newer, and the GitHub CLI (`gh`), logged in with `gh auth login`. `install.sh` prints a hint if `gh` is missing or not logged in; without it every sync pushes its branch, then fails.
+First install the prerequisites: Python 3.12 or newer (the system one, not a venv), git 2.40 or newer, and the GitHub CLI (`gh`), logged in with `gh auth login`. `install.sh` prints a hint if `gh` is missing or not logged in; without it every sync refuses to push its branch (nothing is pushed), as it cannot check that `origin` is private.
 
 Same hostname as before: nothing special. Clone the repo, run `install.sh`, and the machine's profile and settings override apply on the first sync.
 
@@ -61,7 +61,7 @@ claude plugin install example-plugin@example-marketplace
 ```
 
 - It never runs them. Read each one before you paste it: a plugin runs code on this machine.
-- It prints nothing when everything matches, and never changes the exit code (`doctor remediate` does not install either).
+- It prints nothing when everything matches, and never changes the exit code (`doctor remediate` does not install either, though its retry sync does when `PLUGINS=full`).
 - The live file already has this machine's override applied, so a plugin an override turns off is not listed. To keep a plugin off one machine, set it to `false` in `~/.claude/settings.json` there and run `claude-sync.sh override add '.enabledPlugins["example-plugin@example-marketplace"]'`.
 - `claude-plugins-official` is added by Claude Code itself on the first interactive session; doctor gives `claude plugin marketplace add anthropics/claude-plugins-official` when it is missing.
 - A marketplace whose source the CLI would misread (a `git` URL without `.git` on a host other than GitHub or GitLab, an inline `settings` source) gets a note instead of a command. Claude Code clones declared marketplaces itself after a session starts.
@@ -69,7 +69,7 @@ claude plugin install example-plugin@example-marketplace
 - If either plugin file is not JSON or not in a shape this tool knows (Claude Code can change it between versions), doctor prints one "Plugin check skipped" line and goes on.
 - Inside a session, `/plugin marketplace add <source>` and `/plugin install <name>@<marketplace>` do the same.
 
-To have the tool run them for you, opt in with `install-plugins`:
+To have the tool run them for you, opt in with `install-plugins`, or install them automatically on every sync with `PLUGINS=full` (below):
 
 ```bash
 ~/claude-config/claude-sync.sh doctor install-plugins        # shows the commands, asks y/N
@@ -82,6 +82,10 @@ To have the tool run them for you, opt in with `install-plugins`:
 - It skips what `doctor` only notes (a marketplace with no add command, a plugin whose marketplace is not declared), `@synced` plugins, `claudeai-` marketplaces, and any name it could not run exactly as shown (control characters, a leading `-`, or characters the Windows shell would read). Each skip is listed; skips do not change the exit code.
 - If `claude` is not on `PATH` it says so and exits non-zero. If a plugin file is in an unknown shape it installs nothing and exits non-zero.
 - It does not take the sync lock and does not change the clone. Start a new Claude Code session afterwards to load the plugins.
+
+### Install them automatically (`PLUGINS=full`)
+
+Put `PLUGINS=full` in `machines/<hostname>.conf`, or from any machine run `claude-sync.sh machine NAME plugins full` (`off` turns it back off; `machine NAME show` prints it). Then `sync`, `pull` and the cloud `remote` run `install-plugins --yes` after applying, so every plugin and marketplace that `settings.json` enables is installed; nothing else is. It prints nothing when nothing is missing, and a failure (no `claude` on `PATH`, network) only prints one warning line and leaves the exit code alone: run `claude-sync.sh doctor install-plugins` to see why. A value other than `full` or `off` counts as off and prints one warning line on each sync and pull (never a failure, so a bad value that arrives by merge cannot stop the pull that fetches its fix); `doctor` and `machine NAME show` show it, and `machine NAME plugins full` (or `off`) rewrites it. The install runs after the sync lock is released, and also after a sync whose push or PR step failed (the config is applied by then; the run still fails). When `settings.json` enables a plugin this machine cannot install (its marketplace is not declared), it prints one note line pointing at `doctor`. This runs third-party code named by a synced file, so use it only where you trust the config repo. `doctor remediate`'s retry sync installs too when it is on. Start a new Claude Code session to load new plugins.
 
 ## Clone a profile as an independent copy
 
@@ -113,7 +117,7 @@ Put the file under `machines/<profile>/agents/`, `hooks/` or `skills/`, or add `
 
 ## Share a machine's changes
 
-`sync` puts this machine's changes on `sync/<hostname>` and opens a PR for it (it needs `gh`, logged in; `CLAUDE_SYNC_GH=<path>` picks the binary and `CLAUDE_SYNC_GH_REPO=owner/repo` the repo when origin's URL doesn't show it; `CLAUDE_SYNC_LOCK_WAIT=<seconds>` sets how long a second run waits for the lock; `CLAUDE_SYNC_BACKUPS=<n>` how many apply backups are kept, see "Restore a file from an apply backup"; `CLAUDE_SYNC_FLOCK` is gone, see `docs/python-port.md`). Review and merge the PR; every machine picks it up on its next `sync` or `pull`. Later syncs from the same machine update the same PR. If `gh` is missing or not logged in, the branch is still pushed and the error prints the `gh pr create` command to run by hand.
+`sync` puts this machine's changes on `sync/<hostname>` and opens a PR for it (it needs `gh`, logged in; `CLAUDE_SYNC_GH=<path>` picks the binary and `CLAUDE_SYNC_GH_REPO=owner/repo` the PR's repo when origin's URL doesn't show it (it must name the repo origin pushes to); `CLAUDE_SYNC_LOCK_WAIT=<seconds>` sets how long a second run waits for the lock; `CLAUDE_SYNC_BACKUPS=<n>` how many apply backups are kept, see "Restore a file from an apply backup"; `CLAUDE_SYNC_FLOCK` is gone, see `docs/python-port.md`). Review and merge the PR; every machine picks it up on its next `sync` or `pull`. Later syncs from the same machine update the same PR. If `gh` is missing or not logged in, or `origin` is public or a template, nothing is pushed: see "Sync refuses to push" below. (If the push worked but `gh pr create` failed, the error prints the command to run by hand.)
 
 To drop a machine's pending changes instead: close the PR, delete the branch on GitHub, then on that machine:
 
@@ -130,6 +134,18 @@ git -C ~/claude-config reset -q --hard
 A machine without them is fine: capture skips what is missing and the repo copy is kept.
 
 If a sync says "refusing to capture" because the clone moved while this machine had its own rules or commands, copy `~/.claude/rules/`, `~/.claude/commands/` and `~/.claude/keybindings.json` somewhere safe first, as `pull` discards them. Run `pull`, copy the files back, then run `sync` to propose them.
+
+## Sync refuses to push: origin is public, a template, or unchecked
+
+`sync` and `push` ask GitHub, through `gh api --hostname <host>`, whether the repo `origin` pushes to is private and not a template before pushing `sync/<hostname>`. The repo is read from `git remote get-url --push --all origin`, so a `pushurl` or a `url.*.pushInsteadOf` rewrite is what is checked; the fetch URL and `CLAUDE_SYNC_GH_REPO` never are, and `GH_HOST` cannot send the check to another host. If it is public or a template, or it cannot be checked, it prints "refusing to push" and pushes nothing (the config was still applied locally). "Could not verify" covers: a push URL that names no `owner/repo` (a local path), push URLs naming more than one repo, `CLAUDE_SYNC_GH_REPO` set to a different repo than the push URL (unset it or make it match), and `gh` missing or not logged in to that host. `ssh.github.com` (SSH over port 443) counts as `github.com`; any other host is taken as GitHub Enterprise, so an SSH host alias such as `git@github-work:owner/repo.git` fails with "an unknown host (an SSH alias?)": use the real `git@github.com:owner/repo.git` as the push URL, with the alias's key set in `core.sshCommand` or `~/.ssh/config` for `github.com`. Fix the cause:
+
+```bash
+git -C ~/claude-config remote -v                                 # where does origin push? (the "(push)" lines)
+git -C ~/claude-config remote set-url origin <your private repo> # then re-run sync
+gh auth status --hostname github.com                             # "could not verify": install gh and log in
+```
+
+Use your own private repo that is not marked as a template (GitHub: Settings, "Template repository" off). There is no override. The public mirror export (`python3 -m claude_sync.publish`) is not affected.
 
 ## A sync seems stuck
 
@@ -209,7 +225,7 @@ Choose what the cloud machine gets from any machine you own, with `claude-sync.s
 
 - Nothing was applied (`~/.claude` is empty): the session did not include the sync repo. The setup script only sees repos the session cloned and cannot fetch a private one, so add the sync repo to the session when you start it, or list it under the environment's **Repositories** (the Default environment has no such list).
 - "Unknown command" or the usage text: the checkout is older than the `remote` command. Merge the latest tool into the sync repo, then start a new session.
-- A plugin is missing in the session: `remote` installs plugins only with `--plugins`, and `machine cloud plugin disable` removes one on purpose (`machine cloud show` lists the overrides). If it failed, the message names the step: the `claude` CLI not on `PATH`, or the marketplace host blocked by the environment's network (set Network access to Full, or allow it). The config was applied either way.
+- A plugin is missing in the session: `remote` installs plugins only with `--plugins` or `PLUGINS=full` on the cloud machine (`machine cloud plugins full`), and `machine cloud plugin disable` removes one on purpose (`machine cloud show` lists the overrides). If it failed, the message names the step: the `claude` CLI not on `PATH`, or the marketplace host blocked by the environment's network (set Network access to Full, or allow it). The config was applied either way.
 - The session will not start: the script exited non-zero. Keep the `exit 0` at its end, and `|| echo` after `remote`.
 - A `sync/<container name>` branch appeared in the repo: something pushed from a container, so `CLAUDE_CODE_REMOTE` was not seen (or `CLAUDE_SYNC_REMOTE=0` was set). Set `CLAUDE_SYNC_REMOTE=1` in the environment's variables, then delete the stray branch.
 - `install`, `push`, `override`, `profile`, `tier` or `machine` says "throwaway cloud session": that is the guard working. Run them on a machine you own, or set `CLAUDE_SYNC_REMOTE=0` to override.
