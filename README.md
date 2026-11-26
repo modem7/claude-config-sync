@@ -321,7 +321,7 @@ if [ -z "$dir" ]; then
   else
     echo "WARNING: could not clone ${SYNC_REPO} (a private repo cannot be cloned here)." >&2
     echo "WARNING: agents, skills and CLAUDE.md were NOT applied." >&2
-    echo "WARNING: list the repo under Repositories and select it when starting the session." >&2
+    echo "WARNING: list the repo under Repositories in the environment settings." >&2
   fi
 fi
 
@@ -337,8 +337,8 @@ Then:
 
 1. Check the script still starts with `#!/bin/bash`, and tap **Save changes**.
 2. **Get the sync repo into every session.** The setup script runs in the folder that holds the session's checkouts. It cannot read your saved secrets, so it cannot clone a private repo itself.
-   - **Private sync repo (the normal case):** if the environment has a **Repositories** list, add the sync repo there. Then **select the sync repo when you start each session**: the repo picker on the new-session screen takes more than one repo, so tick the sync repo next to the project you are working on. Without it the config is not applied, and the script only prints a `WARNING` line. The Default environment has no such list, so make a new environment for this.
-   - **Public sync repo (for example a fork of the public template):** nothing more is needed. The script clones it when the session did not include it. Selecting it is still the more reliable route.
+   - **Private sync repo (the normal case):** if the environment has a **Repositories** list, add the sync repo there. The platform then checks it out in every session on that environment, even one started with no repo ticked, so there is nothing to select each time. The new-session repo picker takes more than one repo, so you can still tick the sync repo yourself next to the project you are working on. Without the list or a ticked repo the config is not applied, and the script only prints a `WARNING` line. The Default environment has no such list, so make a new environment for this.
+   - **Public sync repo (for example a fork of the public template):** nothing more is needed. The script clones it when the session did not include it. Listing it under Repositories is still the more reliable route; the clone is a backstop.
 3. In the new session, check that `~/.claude/CLAUDE.md` and `~/.claude/agents/` are there (run `ls ~/.claude`, or ask Claude to). If they are missing, run `ls -d */` to see whether the sync repo was checked out.
 4. Sessions that were already running keep the old script; only new ones run the saved one. If you change the script later, save it and start another new session to try it.
 
