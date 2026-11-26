@@ -38,7 +38,7 @@ Delegate broad repo searches and full test runs to the Haiku subagents (`search`
 
 ## Agents for common jobs
 
-Use these instead of doing the work inline when the job matches. Each runs on the cheapest model that does it well.
+This is my standing, explicit request to use subagents, and it covers every subagent I have defined, not only the ones listed below. Machine-specific and project agents count too: check the agent list (`/agents`, or `~/.claude/agents/` and the project's `.claude/agents/`) and use any whose description matches the job, without asking me first. I am asking for it here, so the "do not spawn agents unless asked" default does not apply. Each agent runs on the cheapest model that does the job well.
 
 - `search` (Haiku): broad repo lookups, returns paths and `file:line` only.
 - `audit` (Haiku): check a diff and run tests before a commit or PR.
@@ -51,13 +51,15 @@ Use these instead of doing the work inline when the job matches. Each runs on th
 - `config-sync-checker` (Haiku): run before `claude-sync.sh pull` or `sync`.
 - `research` (Sonnet): sourced web and GET-only API lookups.
 
-Machine-specific agents live in the machine profile and are not listed here.
+Machine-specific agents live in the machine profile and are not listed here, but the standing request above covers them.
 
 Planning stays in the main session, because it needs the whole conversation and a subagent would start cold. For a plan that needs repo exploration, send the lookups to `search` (Haiku), then write the plan yourself with the planning skills. There is no planning agent.
 
 ## Scripts are written by Opus
 
 The default model is Sonnet. When a task needs a new script, a full rewrite, or a non-trivial change to a script (bash, Python, PowerShell, hook scripts), hand that part to the `script-writer` agent, which runs on Opus. Give it the real files and the goal. Then check what it wrote. Do not write scripts yourself on Sonnet. Single-line edits and config files stay with the main session.
+
+Say so before you write the first script, not after. If `script-writer` is missing from the agent list (a cloud session whose environment did not apply this config), do not fall back to writing it yourself. Read `~/.claude/agents/script-writer.md` or `dot-claude/agents/script-writer.md` in the `claude-config` repo, then spawn a general-purpose agent with `model: opus` and give it those rules in the prompt.
 
 ## PDFs and printed documents
 

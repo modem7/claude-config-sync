@@ -37,7 +37,7 @@ Each agent is a Markdown file with frontmatter (`name`, `description`, `model`, 
 ## Notes per agent
 
 - **`search`** stops at paths and roles. It does not read file contents back to the caller.
-- **`audit`** starts from the last commit, so uncommitted work is invisible to it. Where there is no git repo to give it a worktree, it reviews the diff read-only and runs nothing. A machine without a repo needs a profile replacement without `isolation: worktree`.
+- **`audit`** starts from the last commit, so uncommitted work is invisible to it. Where there is no git repo to give it a worktree, it reviews the diff read-only and runs nothing. A machine without a repo needs a profile replacement without `isolation: worktree`; a profile can carry one.
 - **`script-writer`** checks names, paths and flags against the real files. Bash scripts start with `set -euo pipefail`.
 - **`pr-shepherd`** checks repo state first. It writes commit messages and PR bodies to a file and passes them with `-F` or `--body-file`, never a heredoc. `git push` runs alone, and any command naming the default branch runs in a separate call. Woodpecker is read from `WOODPECKER_SERVER` and `WOODPECKER_TOKEN`.
 - **`ci-debugger`** finds the first failing step, because later failures are usually fallout. It says whether the cause is a real bug, a flaky run, a stale cache or an expired secret, and backs it with a log line.
@@ -53,3 +53,7 @@ Each agent is a Markdown file with frontmatter (`name`, `description`, `model`, 
 2. Check the published tree for personal strings before opening the PR.
 3. A profile agent with the same name replaces the shared one on that machine. Keep the two in step when you change either.
 4. Add a row to the table above and update `README.public.md` if the model or purpose changes. `docs/doc-map.md` lists every other doc to touch, and `docs-sync` checks it.
+
+## Standing request to use subagents
+
+`dot-claude/CLAUDE.md` states that using subagents is the owner's explicit request, for every agent defined (shared, profile or project), not only the ones it lists. It targets the "do not spawn agents unless asked" default in cloud sessions on some plans. Its effect on that default is untested.
