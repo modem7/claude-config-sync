@@ -285,38 +285,66 @@ Claude Code on the web (and any other cloud session) starts in a fresh container
 
 ### Set it up
 
-Open the **Edit environment** screen: on claude.ai/code, or in the Claude app, open the environment menu in a session's title bar, then **Edit**. The Default environment works. The fields, top to bottom:
+Open the **Edit environment** screen: on claude.ai/code, or in the Claude app, open the environment menu in a session's title bar, then **Edit**. For a private sync repo you need an environment with a **Repositories** list (the Default one has none; see step 2 below). The fields, top to bottom:
 
 | Field | What to do for this tool |
 |---|---|
-| **Name** | Leave it. The Default environment cannot be renamed. |
+| **Name** | Name it after your sync repo. |
 | **Network access** | Leave it on **Full**. `--plugins` and `--tools` download from GitHub and package registries; with a limited level, allow those hosts or the installs fail. |
 | **Setup script** | Paste the script below. It is a bash script that runs once when a new session starts, before Claude Code launches. **Choose file** loads a script from a file instead of pasting; pasting is easier on a phone. |
 | **Environment variables** | Optional. Only for a named cloud machine (see "Give the cloud machine its own config"). The setup script cannot read these, so it never relies on them. |
 
-Paste this into **Setup script**:
+Paste this into **Setup script**. Change `OWNER/REPO` on the `SYNC_REPO` line to your sync repo:
 
 ```bash
 #!/bin/bash
 # Apply the synced Claude config in this fresh container. The sync repo is the
-# checkout that has a machines/ folder; if the session did not include it, do nothing.
-for d in */; do
-  [ -f "${d}claude-sync.sh" ] && [ -d "${d}machines" ] || continue
-  (cd "$d" && CLAUDE_SYNC_REMOTE=1 CLAUDE_SYNC_HOSTNAME=cloud timeout 600 ./claude-sync.sh remote --plugins --tools) \
-    || echo "claude-sync remote failed" >&2
-  break
-done
+# checkout that has a machines/ folder. If the session did not include it, try to
+# clone it (this only works for a public repo). Always exits 0 so a problem never
+# blocks the session, but every problem prints a WARNING line.
+SYNC_REPO="OWNER/REPO"
+find_sync() {
+  for d in */; do
+    if [ -f "${d}claude-sync.sh" ] && [ -d "${d}machines" ]; then
+      echo "${d%/}"
+      return 0
+    fi
+  done
+  return 1
+}
+
+dir=$(find_sync) || true
+if [ -z "$dir" ]; then
+  echo "No sync repo checkout in $(pwd); cloning ${SYNC_REPO}" >&2
+  if timeout 120 git clone --depth 50 "https://github.com/${SYNC_REPO}.git" sync-repo >&2; then
+    dir=sync-repo
+  else
+    echo "WARNING: could not clone ${SYNC_REPO} (a private repo cannot be cloned here)." >&2
+    echo "WARNING: agents, skills and CLAUDE.md were NOT applied." >&2
+    echo "WARNING: list the repo under Repositories and select it when starting the session." >&2
+  fi
+fi
+
+if [ -n "$dir" ]; then
+  (cd "$dir" && CLAUDE_SYNC_REMOTE=1 CLAUDE_SYNC_HOSTNAME=cloud \
+    timeout 600 ./claude-sync.sh remote --plugins --tools) \
+    || echo "WARNING: claude-sync remote failed in ${dir}: config NOT applied" >&2
+fi
 exit 0
 ```
 
 Then:
 
 1. Check the script still starts with `#!/bin/bash`, and tap **Save changes**.
-2. **Start a new session and include your sync repo in it**, next to the project you are working on. The setup script runs in the folder that holds the session's checkouts and can only see repos the session cloned; it cannot fetch a private repo itself. An environment that has a **Repositories** list (the Default one does not) can list the sync repo once so every session gets it.
-3. In the new session, check that `~/.claude/CLAUDE.md` and `~/.claude/agents/` are there (run `ls ~/.claude`, or ask Claude to).
+2. **Get the sync repo into every session.** The setup script runs in the folder that holds the session's checkouts. It cannot read your saved secrets, so it cannot clone a private repo itself.
+   - **Private sync repo (the normal case):** if the environment has a **Repositories** list, add the sync repo there. Then **select the sync repo when you start each session**: the repo picker on the new-session screen takes more than one repo, so tick the sync repo next to the project you are working on. Without it the config is not applied, and the script only prints a `WARNING` line. The Default environment has no such list, so make a new environment for this.
+   - **Public sync repo (for example a fork of the public template):** nothing more is needed. The script clones it when the session did not include it. Selecting it is still the more reliable route.
+3. In the new session, check that `~/.claude/CLAUDE.md` and `~/.claude/agents/` are there (run `ls ~/.claude`, or ask Claude to). If they are missing, run `ls -d */` to see whether the sync repo was checked out.
 4. Sessions that were already running keep the old script; only new ones run the saved one. If you change the script later, save it and start another new session to try it.
 
-The script is safe to paste as it is: it finds the sync repo by its `machines/` folder, does nothing when the repo is not in the session, always exits 0 so it cannot stop a session from starting, gives the installs ten minutes (`timeout 600`) so a hung download cannot hold the session up, and applies the config before it installs anything. `CLAUDE_SYNC_REMOTE=1` is what tells `remote` it is in a cloud session; `remote` refuses to run without it on a machine you own, where it would replace your config with the `cloud` machine's.
+The script is safe to paste as it is: it finds the sync repo by its `machines/` folder, always exits 0 so it cannot stop a session from starting, prints a `WARNING` line for each thing that goes wrong (clone failed, `remote` failed), gives the installs ten minutes (`timeout 600`) so a hung download cannot hold the session up, and applies the config before it installs anything. `remote` takes only `--plugins` and `--tools`; any other word prints its usage, and the script's `exit 0` hides that failure unless you read the `WARNING` line. `CLAUDE_SYNC_REMOTE=1` is what tells `remote` it is in a cloud session; `remote` refuses to run without it on a machine you own, where it would replace your config with the `cloud` machine's.
+
+**Agents in cloud sessions.** On some plans a new session may not start subagents unless asked. The synced `CLAUDE.md` has a standing request that tells Claude to use your defined agents without asking. Its effect on that default is untested, but it worked in trial sessions, so check that file is in place (step 3) if an agent such as `script-writer` is not used.
 
 ### How it fits together
 
